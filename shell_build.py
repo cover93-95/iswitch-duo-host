@@ -93,8 +93,8 @@ def main():
             target.unlink()
     info = plistlib.loads((app / 'Info.plist').read_bytes())
     executable = (app / info['CFBundleExecutable']).read_bytes()
-    if b'Guest.framework did not load' not in executable:   # A message, not the path: the compiler may inline a short strcpy.
-        raise RuntimeError('The executable does not look for Guest.framework: was shell.patch applied?')
+    if b'Guest.framework did not load' not in executable or b'shaders compiled from source on the device' not in executable:   # Messages, not paths: the compiler may inline a short strcpy.
+        raise RuntimeError('The executable lacks the shell patch: was shell.patch applied?')
     commit = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
     info['DMCommit'] = commit[:12] + '+shell'   # The host's log names it (dm/host/main.c).
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))

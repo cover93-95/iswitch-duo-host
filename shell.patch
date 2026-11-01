@@ -24,3 +24,38 @@
  // The NRO modules (loader.c "NRO modules") are packed instead of getting sections of their own: a Mach-O file has at most 255 sections, and Super Smash Bros. Ultimate's 98 NROs would
  // take 294. gen_embed.py puts their pieces one after another, each 16K aligned, in __TEXT,__dm_nro_x0 / __DM_NRO_W,__img / __TEXT,__dm_nro_x1, and __DATA,__dm_nro_tab lists them:
  // 32 bytes of name, then the offset and length of its x0, W and x1 pieces in their sections (u64 each). A module name never holds an underscore, so these names meet no module's
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -3821,12 +3821,32 @@
+ // Build the library from a .metallib file without permanently occupying a file descriptor: newLibraryWithURL keeps that file open for as long as the library object lives (one per game shader - of the 258 descriptors the iOS app permanently holds in a run, 213 are these,
+ // while the default soft limit of an iOS process is 256; new shaders created in other acts raise it further). Here the file is mapped into memory and closed immediately, and the library is built from the in-memory data; the mapping is released when the library's data object is freed
+ static __thread int t_lib_layer;
++#ifdef DM_SHELL
++// The shell (iSwitch Duo, the idea from D2R Mobile's nvn_mtl.m, MIT): a Windows build has no Metal compiler, so the library file holds the MSL, and it is compiled here.
++// The options are ios_metal.py's: relaxed and preserveInvariance. MSL 3.2 is what its -mios-version-min=18.0 compiles. There is no public option for its -O1.
++static id<MTLLibrary> lib_from_source(const void *bytes, size_t len, NSString *path, NSError **err) {
++    NSString *src = [[NSString alloc] initWithBytes:bytes length:len encoding:NSUTF8StringEncoding];
++    if (!src) { if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:EILSEQ userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"neither a compiled library nor MSL: %@", path]}]; return nil; }
++    static MTLCompileOptions *options; static dispatch_once_t once;
++    dispatch_once(&once, ^{ options = [MTLCompileOptions new]; options.mathMode = MTLMathModeRelaxed; options.preserveInvariance = YES; options.languageVersion = MTLLanguageVersion3_2;
++        MLOG("shaders compiled from source on the device: mathMode %ld, preserveInvariance %d, language %#lx", (long)options.mathMode, (int)options.preserveInvariance, (unsigned long)options.languageVersion); });
++    static _Atomic int count; static _Atomic long long total_us; CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
++    id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:options error:err];
++    long long us = (long long)((CFAbsoluteTimeGetCurrent() - t0) * 1e6); int k = atomic_fetch_add(&count, 1) + 1; long long sum = atomic_fetch_add(&total_us, us) + us;
++    if (!lib) MLOG("[RED] shader source did not compile: %s: %s", path.lastPathComponent.UTF8String, err && *err ? (*err).localizedDescription.UTF8String : "no error object");
++    else if (k <= 8 || k % 100 == 0 || us >= 300000) MLOG("shader source %d compiled in %.1f ms, %.1f ms so far: %s", k, us / 1e3, sum / 1e3, path.lastPathComponent.UTF8String);
++    return lib;
++}
++#endif
+ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
+     int fd = open(path.fileSystemRepresentation, O_RDONLY); struct stat st;
+     if (fd < 0 || fstat(fd, &st) || st.st_size <= 0) { if (fd >= 0) close(fd); if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"cannot open %@", path]}]; return nil; }
+     size_t len = (size_t)st.st_size; void *m = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
+     t_lib_layer = m != MAP_FAILED && memmem(m, len, "render_target_array_index", 25) != NULL;   // the library's functions use the layer: for a vertex library, its output (shader_load)
+     if (m == MAP_FAILED) { if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"mmap failed %@", path]}]; return nil; }
++#ifdef DM_SHELL
++    if (len < 4 || memcmp(m, "MTLB", 4)) { id<MTLLibrary> lib = lib_from_source(m, len, path, err); munmap(m, len); return lib; }   // A compiled library starts with MTLB.
++#endif
+     dispatch_data_t d = dispatch_data_create(m, len, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ munmap(m, len); });
+     return [g_dev newLibraryWithData:d error:err];
+ }

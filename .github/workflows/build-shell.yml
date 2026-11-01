@@ -9,6 +9,10 @@ on:
         description: Build the shell (otherwise only check the toolchain)
         type: boolean
         default: false
+      game:
+        description: The nxnative profile the host is compiled with, a title ID. No game data is involved.
+        type: string
+        default: 0100E65002BB8000
 
 permissions:
   contents: read
@@ -18,7 +22,7 @@ env:
   # The image's default Xcode is another version: this path selects the one nxnative's dmsh_chain.lock records.
   DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
   EXPECTED_XCODE: Xcode 27.2
-  GAME: 0100E65002BB8000   # Which profile's constants the host is compiled with. Holds no game data.
+  GAME: ${{ inputs.game }}   # Which profile's constants the host is compiled with. Holds no game data.
 
 defaults:
   run:
@@ -67,6 +71,10 @@ jobs:
           ref: ${{ env.NXNATIVE_COMMIT }}
           persist-credentials: false
           path: nxnative
+      - name: Check the profile's name
+        run: |
+          [[ "$GAME" =~ ^[0-9A-F]{16}$ ]]
+          test -f "nxnative/dm/games/$GAME/game.tsv"
       - name: Apply the shell patch
         run: git -C nxnative apply "$GITHUB_WORKSPACE/tools/shell.patch"
       - name: Install the selected Xcode's Metal toolchain
