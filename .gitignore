@@ -1,0 +1,19 @@
+# A guard, not a permission: nothing but the listed sources belongs in this public repository.
+*.nsp
+*.xci
+*.nsz
+*.xcz
+*.nca
+*.nso
+*.nro
+*.ipa
+*.app/
+*.zip
+*.keys
+*.p12
+*.cer
+*.mobileprovision
+*.tik
+RomFS/
+ExeFS/
+.env

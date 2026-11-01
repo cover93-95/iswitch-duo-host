@@ -1,0 +1,98 @@
+# Builds nxnative's iOS host with no game file, key, shader, certificate or secret anywhere in the job.
+# It only starts by hand. By default it stops after reporting the toolchain; the build needs "build" ticked.
+name: Build the nxnative shell
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Build the shell (otherwise only check the toolchain)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  NXNATIVE_COMMIT: 0e16e0e0bca480aded95a4ee35830f06330de1ab
+  # The image's default Xcode is another version: this path selects the one nxnative's dmsh_chain.lock records.
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+  EXPECTED_XCODE: Xcode 27.2
+  GAME: 0100E65002BB8000   # Which profile's constants the host is compiled with. Holds no game data.
+
+defaults:
+  run:
+    shell: bash   # Named, so that a failure before a pipe's last command fails the step.
+
+jobs:
+  toolchain:
+    name: Check the toolchain
+    runs-on: xcode-27   # A standard runner. Never xcode-27-xlarge: that one is a billed larger runner.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: seedds/nxnative
+          ref: ${{ env.NXNATIVE_COMMIT }}
+          persist-credentials: false
+          path: nxnative
+      - name: Install the selected Xcode's Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain   # A separate component, not in the image.
+      - name: Report and compare
+        working-directory: nxnative
+        run: |
+          sw_vers
+          ls -ld /Applications/Xcode_27.2.app
+          xcodebuild -version
+          xcrun -sdk iphoneos --show-sdk-version
+          xcrun -sdk iphoneos metal --version
+          grep metal_iphoneos dm/gfx/tools/dmsh_chain.lock
+          test "$(xcodebuild -version | head -1)" = "$EXPECTED_XCODE"
+          python3 dm/gfx/tools/own_compilers.py --check-metal   # Stops unless the compiler is the lock's.
+
+  shell:
+    name: Build the shell
+    needs: toolchain
+    if: ${{ inputs.build }}
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: seedds/nxnative
+          ref: ${{ env.NXNATIVE_COMMIT }}
+          persist-credentials: false
+          path: nxnative
+      - name: Apply the shell patch
+        run: git -C nxnative apply "$GITHUB_WORKSPACE/tools/shell.patch"
+      - name: Install the selected Xcode's Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Check the Metal compiler again
+        working-directory: nxnative
+        run: python3 dm/gfx/tools/own_compilers.py --check-metal
+      - name: Install XcodeGen
+        run: command -v xcodegen || brew install xcodegen
+      - name: Build the shell
+        run: |
+          mkdir -p logs
+          python3 tools/shell_build.py nxnative --output "$RUNNER_TEMP/shell-build" 2>&1 | tee logs/shell-build.log
+      - name: Zip the app
+        run: ditto -c -k --keepParent "$RUNNER_TEMP/shell-build/shell/DmIOS.app" "$RUNNER_TEMP/shell-build/shell/DmIOS.app.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nxnative-shell
+          path: |
+            ${{ runner.temp }}/shell-build/shell/DmIOS.app.zip
+            ${{ runner.temp }}/shell-build/shell/shell_info.json
+            ${{ runner.temp }}/shell-build/shell/licenses
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: logs-shell-build
+          path: logs
+          retention-days: 7

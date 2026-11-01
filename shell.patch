@@ -1,0 +1,26 @@
+--- a/dm/host/loader.c
++++ b/dm/host/loader.c
+@@ -522,7 +522,23 @@
+     if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p → %#lx (%#lx bytes) failed: %d", m->name, from, (unsigned long)to, size, kr);
+     if ((cur & need) != need) die("%s permissions after vm_remap %#x, missing %#x", m->name, cur, need);
+ }
++#ifdef DM_SHELL
++// The shell (iSwitch Duo, after D2R Mobile's loader.c, MIT): the modules are in Frameworks/Guest.framework/Guest, written and added on Windows, with the same section names.
++#include <dlfcn.h>
++#include <mach-o/dyld.h>
++static const struct mach_header_64 *image_mh(void) {
++    static const struct mach_header_64 *mh; if (mh) return mh;
++    char exe[4096]; uint32_t n = sizeof exe; if (_NSGetExecutablePath(exe, &n)) die("no executable path");
++    char *sl = strrchr(exe, '/'); if (!sl || (size_t)(sl - exe) + 40 > sizeof exe) die("wrong executable path: %s", exe); strcpy(sl, "/Frameworks/Guest.framework/Guest");
++    if (!dlopen(exe, RTLD_NOW)) die("Guest.framework did not load (%s): %s", exe, dlerror());
++    for (uint32_t i = 0; i < _dyld_image_count(); i++) if (strstr(_dyld_get_image_name(i), "/Guest.framework/Guest")) mh = (const struct mach_header_64 *)_dyld_get_image_header(i);
++    if (!mh) die("Guest.framework loaded, but its image header was not found");
++    LOG("modules taken from %s", exe); return mh;
++}
++#define IMAGE_MH image_mh()
++#else
+ #define IMAGE_MH (&_mh_execute_header)
++#endif
+ // The NRO modules (loader.c "NRO modules") are packed instead of getting sections of their own: a Mach-O file has at most 255 sections, and Super Smash Bros. Ultimate's 98 NROs would
+ // take 294. gen_embed.py puts their pieces one after another, each 16K aligned, in __TEXT,__dm_nro_x0 / __DM_NRO_W,__img / __TEXT,__dm_nro_x1, and __DATA,__dm_nro_tab lists them:
+ // 32 bytes of name, then the offset and length of its x0, W and x1 pieces in their sections (u64 each). A module name never holds an underscore, so these names meet no module's
