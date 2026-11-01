@@ -43,6 +43,7 @@ def main():
     project = root / 'project'
     gen = project / 'Gen'
     (gen / 'dm').mkdir(parents=True)
+    (gen / 'dm/shell-placeholder.txt').write_text('Replaced on Windows by the loader tables.')   # nxnative only ever builds this folder non-empty.
     for name in ('Sources', 'tools'):
         (project / name).symlink_to(ios / name, target_is_directory=True)
     shutil.copyfile(ios / 'project.yml', project / 'project.yml')
@@ -92,9 +93,12 @@ def main():
             target.unlink()
     info = plistlib.loads((app / 'Info.plist').read_bytes())
     executable = (app / info['CFBundleExecutable']).read_bytes()
-    if b'/Frameworks/Guest.framework/Guest' not in executable:
+    if b'Guest.framework did not load' not in executable:   # A message, not the path: the compiler may inline a short strcpy.
         raise RuntimeError('The executable does not look for Guest.framework: was shell.patch applied?')
-    (out / 'shell_info.json').write_text(json.dumps({'game': profile.id, 'chain': chain, 'executable': info['CFBundleExecutable'], 'bytes': len(executable)}, indent=2))
+    commit = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
+    info['DMCommit'] = commit[:12] + '+shell'   # The host's log names it (dm/host/main.c).
+    (app / 'Info.plist').write_bytes(plistlib.dumps(info))
+    (out / 'shell_info.json').write_text(json.dumps({'nxnative': commit, 'game': profile.id, 'chain': chain, 'executable': info['CFBundleExecutable'], 'bytes': len(executable)}, indent=2))
     copy_licenses(repo, out / 'licenses')
     print(f'Shell built: {app}, {len(executable)} bytes, profile {profile.id}, chain {chain}', flush=True)
 
