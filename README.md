@@ -1,11 +1,18 @@
-# Shell builder for nxnative
+# NX2Apple Host M3 — shell iOS v1.1
 
-Builds [nxnative](https://github.com/seedds/nxnative)'s iOS host, unsigned, with no module inside, for a test on the maintainer's own phone.
+Ce dépôt construit manuellement le shell partagé officiel de **NX2Apple v1.1.0**, vide de tout jeu, pour la mise à jour de l’installation Host M3.
 
-**This repository holds and uses no game file, key, certificate, signature or secret.** Please do not add any.
+Le workflow est verrouillé sur une révision précise de NX2Apple et produit une IPA non signée avec :
 
-- `shell.patch`: makes nxnative's loader read its modules from a framework instead of the executable.
-- `shell_build.py`: the build, without a game.
-- `.github/workflows/build-shell.yml`: starts by hand only. By default it only reports the toolchain.
+- le Bundle ID source `local.iswitchduo.hostm3` ;
+- l’entitlement `com.apple.developer.kernel.increased-memory-limit` ;
+- aucun framework `DmGame`, RomFS, shader, clé, certificat ou donnée Nintendo ;
+- une police libre Manrope incluse par NX2Apple.
 
-The result does not run a game, and this project provides none. See `NOTICE.md` for origins and licenses.
+Le framework synthétique créé pendant le build sert uniquement à satisfaire le constructeur officiel et est retiré avant l’archivage. La signature et l’installation restent des opérations locales et manuelles. Les anciens fichiers `shell.patch` et `shell_build.py` sont conservés pour l’historique, mais le workflow v1.1 ne les utilise plus.
+
+## Lancer le build
+
+Dans **Actions → Build iOS shell → Run workflow**, sélectionner la branche `codex/nx2apple-v1.1-shell`, cocher `Construire le shell`, puis télécharger l’artefact `DmShell`.
+
+**Ne jamais ajouter à ce dépôt un fichier de jeu, une clé, un shader, une RomFS, un framework de jeu, un certificat ou un secret.**
