@@ -1,4 +1,4 @@
-# Construit le shell iOS sans aucune donnée de jeu. Le workflow a déjà produit le shell Host M3 v1.0 ; ce pin prépare v1.1.0.
+# Construit le shell iOS sans aucune donnée de jeu. Shell separe pour Ocarina of Time (App ID local.iswitchduo.botw) : ne remplace jamais Host M3.
 # Le framework de construction est un marqueur d'un seul symbole, retiré de l'IPA finale.
 # Son identifiant est celui du test amont (test_shell_build.py) : l'hôte exige un profil texte existant dans dm/games.
 # Aucune police Apple dans l'app : Manrope (SIL OFL, fournie par NX2Apple) remplace Arial, y compris pour les lettres des icônes.
@@ -8,7 +8,7 @@ name: Build iOS shell
 on:
   push:
     branches:
-      - codex/nx2apple-v1.1-shell
+      - codex/oot-shell
   workflow_dispatch:
     inputs:
       build:
@@ -22,7 +22,8 @@ permissions:
 env:
   DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
   EXPECTED_XCODE: Xcode 27.2
-  NX2APPLE_COMMIT: 2f788d6b55192952dfacaf97f24700d7668610b6
+  NX2APPLE_COMMIT: 8d13135e2a1eec10406f6b486157ec1d2f56eafd
+  EXPECTED_CHAIN: d1f10abd26a7
 
 defaults:
   run:
@@ -55,12 +56,20 @@ jobs:
           ref: ${{ env.NX2APPLE_COMMIT }}
           persist-credentials: false
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: oot
+          persist-credentials: false
+
       - name: Tools and engine
         run: |
           command -v xcodegen || brew install xcodegen
           python3 -m venv .venv
           .venv/bin/pip install fonttools==4.68.0
           python3 tools/engine.py sync
+          # Moteur fusionne (nxnative #1299 + #1312), sources publiques uniquement.
+          git -C engine apply "$GITHUB_WORKSPACE/oot/engine-oot.diff"
+          grep -q "\"$EXPECTED_CHAIN\"" engine/dm/gfx/nvn/dmsh_chain.h
 
       - name: Marker framework
         run: |
@@ -93,9 +102,9 @@ jobs:
           SHELL_DIR: ${{ runner.temp }}/shell
           DM_SHELL_PACKAGE: ${{ github.workspace }}/frontend-ios
 
-          DM_BUNDLE_ID: local.iswitchduo.hostm3
-          DM_SHELL_NAME: NX2Apple
-          DM_APP_VERSION: 1.1.0
+          DM_BUNDLE_ID: local.iswitchduo.botw
+          DM_SHELL_NAME: NX2 Switch 2
+          DM_APP_VERSION: 1.1.1
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
