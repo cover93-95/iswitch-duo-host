@@ -12,10 +12,21 @@ index cd09e486..6051eb0f 100644
            failed=0
            for t in $tests; do
 diff --git a/dm/games/game.py b/dm/games/game.py
-index b6e546a2..cfb43a16 100644
+index b6e546a2..aae6c0cb 100644
 --- a/dm/games/game.py
 +++ b/dm/games/game.py
-@@ -206,6 +206,8 @@ def header_one(g):
+@@ -102,7 +102,9 @@ def by_build(main_id):   # the profile whose build rows register this main build
+ 
+ 
+ # agl's upscaler network (NDSR), by where the shader map found each key: the compute shaders of agl_ndsr.pck (Donkey Kong Bananza's 24 in its release library, Splatoon Raiders' 20 in its debug one)
+-UPSCALER_SOURCE = re.compile(r'/agl_ndsr\.pck#')
++# and of its variants agl_ndsr_vr.pck and agl_ndsr_vr_light.pck: The Legend of Zelda: Ocarina of Time (Switch 2) upscales with agl_ndsr_vr.pck's, so DM_UPSCALER=metalfx left its network
++# running. A variant the host cannot draw (its colour, its rectangles) is refused there and runs as the game's (nvn_mtl.m up_mfx_wanted, up_mfx_encode)
++UPSCALER_SOURCE = re.compile(r'/agl_ndsr(?:_vr(?:_light)?)?\.pck#')
+ 
+ 
+ def upscaler_keys(g):
+@@ -206,6 +208,8 @@ def header_one(g):
      mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
      if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
      ups = upscaler_keys(g)   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
@@ -24,7 +35,7 @@ index b6e546a2..cfb43a16 100644
      gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
      if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
      om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
-@@ -263,6 +265,7 @@ def header_one(g):
+@@ -263,6 +267,7 @@ def header_one(g):
           f'#define DM_GAME_TEX_BC_CPU {int(tbc == "on")}',
           f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
           f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
@@ -32,6 +43,23 @@ index b6e546a2..cfb43a16 100644
           f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
           f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
           *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
+@@ -292,7 +297,7 @@ if __name__ == '__main__':
+                 ('fps_target', 'FPS_TARGET'), ('fps_hold', 'FPS_HOLD'), ('present_snap', 'PRESENT_SNAP'), ('pso_mtl4', 'PSO_MTL4'),
+                 ('shared_font', 'SHARED_FONT_TTF'), ('pad_layout', 'PAD_LAYOUT'), ('op_mode', 'OPMODE'), ('perf_mode', 'PERF_BOOST'),
+                 ('feedback_snap', 'FEEDBACK_SNAP'), ('tex_flush_upload', 'TEX_FLUSH_UPLOAD'), ('render_cond', 'RENDER_COND'),
+-                ('tex_dirty_upload', 'TEX_DIRTY_UPLOAD'), ('tex_dyn_slots', 'TEX_DYN_SLOTS'), ('gpu_timestamps', 'GPU_TS_SEGMENT'),
++                ('tex_dirty_upload', 'TEX_DIRTY_UPLOAD'), ('tex_dyn_slots', 'TEX_DYN_SLOTS'), ('gpu_timestamps', 'GPU_TS_SEGMENT'), ('draw_barriers', 'DRAW_BARRIERS_GAME'), ('upscaler_keys', 'UPSCALER_KEYS'),
+                 ('vconv_range', 'VCONV_RANGE'), ('stdalloc_cap', 'STDALLOC_CAP'), ('tex_bc_cpu', 'TEX_BC_CPU'), ('ue_texture_pool', 'UE_TEXTURE_POOL'),
+                 ('enc_thread', 'ENC_THREAD'), ('game_args', 'ARGS'), ('game_env', 'ENV')]
+         def val(macro):   # the header's C spelling → the file's plain spelling
+@@ -308,6 +313,7 @@ if __name__ == '__main__':
+              '# profile would hold is written, so the file alone describes the game.']
+         for key, macro in KEYS:
+             v = val(macro)
++            if key == 'upscaler_keys' and v == '': v = 'none'   # an empty value would read as a missing one, which keeps the compiled game's keys
+             if v is not None: L.append(f'{key}\t{v}')
+         api = [val('NVN_API_MAJOR'), val('NVN_API_MINOR')]
+         L.append(f'device_api\t{api[0]}.{api[1] or 0}' if api[0] is not None else 'device_api\t0.0')   # 0.0 = by the SDK version: a key left out would keep the compiled game's value
 diff --git a/dm/games/profile_guess.py b/dm/games/profile_guess.py
 index 8ee3b9d6..f5444929 100644
 --- a/dm/games/profile_guess.py
@@ -133,6 +161,20 @@ index 50fa26b2..eb043504 100644
  }
  // Rhythm Heaven Groove (SDK 21) asks for the built-in panel's identity at start (main+0xa9a4); the SDK's version calls through the vi service object the host never made (SIGSEGV at +0x20).
  //   The game reads a u32 kind and, when it is 2 or more, 0x14 more bytes that it hands on; any other answer makes it hand on zeros. The host has no panel: an all-zero identifier, kind 0
+diff --git a/dm/gfx/msl/copy.metal b/dm/gfx/msl/copy.metal
+index 466939c8..e80deb77 100644
+--- a/dm/gfx/msl/copy.metal
++++ b/dm/gfx/msl/copy.metal
+@@ -6,6 +6,9 @@ vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2);
+ // p[0] = source origin (texels) + source texels per destination texel, p[1] = destination origin + source level size
+ fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {
+   float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; return t.sample(s, st / p[1].zw, level(0)); }
++// fs, each colour channel squared keeping its sign: c * |c| (an upscaler's root-encoded input into linear colour)
++fragment float4 fsq(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {
++  float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; float4 c = t.sample(s, st / p[1].zw, level(0)); return float4(c.rgb * abs(c.rgb), c.a); }
+ struct D { float d [[depth(any)]]; };
+ fragment D fsd(V in [[stage_in]], depth2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {
+   float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; D o; o.d = t.read(uint2(st)); return o; }
 diff --git a/dm/gfx/msl/mdx.metal b/dm/gfx/msl/mdx.metal
 index 9a1303bd..e5d4754a 100644
 --- a/dm/gfx/msl/mdx.metal
@@ -755,7 +797,7 @@ index 1c960a32..fb435f95 100644
 +void mtl_present_screen(uint32_t w, uint32_t h);   // a screen taller than 16:9 (loader.c, DM_SCREEN_ASPECT): the picture's shape for a texture of that shape
  void mtl_present_wait(uint64_t ticket);   // as in nvn_obj.h: wait until that present has been handed to the GPU
 diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
-index 5d7f6180..5fd8667c 100644
+index 5d7f6180..7c3d43df 100644
 --- a/dm/gfx/nvn/nvn_mtl.m
 +++ b/dm/gfx/nvn/nvn_mtl.m
 @@ -18,6 +18,7 @@
@@ -3145,16 +3187,58 @@ index 5d7f6180..5fd8667c 100644
  // always nearest, and stencil is written from the fragment shader too ([[stencil]] export, read through an X32_Stencil8 view of the source). Link's Awakening halves its depth-stencil buffer twice
  // (1920x1080 → 960x540 → 480x270) and its depth-of-field mask pass only writes where stencil bit 1 is clear: with the stencil left as the new texture's undefined content, the mask kept its
  // clear value 1.0 (full blur) everywhere and the whole picture was out of focus. Without a stencil view the stencil is cleared to 0 instead
-@@ -11675,7 +12599,7 @@ static int fmt_int_or_ds(MTLPixelFormat f) {
- static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror) {
-     static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
+@@ -11672,31 +12596,33 @@ static int fmt_int_or_ds(MTLPixelFormat f) {
+         default: return 0;
+     }
+ }
+-static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror) {
+-    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
++// square: each colour channel drawn as c * |c| (the upscaler swap's root-encoded input into linear colour, up_mfx_encode)
++static int copy_t2t_draw_sq(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror, int square) {
++    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fq, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
      if (failed || sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0) return 0;
 -    int depth = (s.pixelFormat == MTLPixelFormatDepth32Float || s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) && d.pixelFormat == s.pixelFormat, stencil = depth && d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
 +    int depth = (s.pixelFormat == MTLPixelFormatDepth32Float || s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth16Unorm) && d.pixelFormat == s.pixelFormat, stencil = depth && d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
      if (!depth && (fmt_int_or_ds(s.pixelFormat) || fmt_int_or_ds(d.pixelFormat))) return 0;
      if (mtl_fmt_block(d.pixelFormat) || !(d.usage & MTLTextureUsageRenderTarget) || s.sampleCount > 1 || d.sampleCount > 1) return 0;
      if (!pso) {
-@@ -12088,6 +13012,13 @@ static void sub_cut(void) {
+         NSError *e = nil; id<MTLLibrary> lib = host_lib("copy", &e);
+-        vf = [lib newFunctionWithName:@"vs"]; ff = [lib newFunctionWithName:@"fs"]; fd = [lib newFunctionWithName:@"fsd"]; fds = [lib newFunctionWithName:@"fsds"];
++        vf = [lib newFunctionWithName:@"vs"]; ff = [lib newFunctionWithName:@"fs"]; fq = [lib newFunctionWithName:@"fsq"]; fd = [lib newFunctionWithName:@"fsd"]; fds = [lib newFunctionWithName:@"fsds"];
+         MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new]; dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = YES; dss = [g_dev newDepthStencilStateWithDescriptor:dd];
+         MTLStencilDescriptor *sd_ = [MTLStencilDescriptor new]; sd_.stencilCompareFunction = MTLCompareFunctionAlways; sd_.depthStencilPassOperation = MTLStencilOperationReplace;   // Replace writes the [[stencil]] output
+         dd.frontFaceStencil = dd.backFaceStencil = sd_; dss_s = [g_dev newDepthStencilStateWithDescriptor:dd];
+         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 2; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1; at = rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]);
+         for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+             sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
+-        if (!vf || !ff || !fd || !fds || !dss || !dss_s || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("[RED] cannot create the pipelines for format-converting / scaling texture copies: %s", e.localizedDescription.UTF8String); return 0; }
++        if (!vf || !ff || !fq || !fd || !fds || !dss || !dss_s || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("[RED] cannot create the pipelines for format-converting / scaling texture copies: %s", e.localizedDescription.UTF8String); return 0; }
+         pso = [NSMutableDictionary dictionary];
+     }
+     // Stencil: read through a stencil-only view of the source (one per layer below); without one it is cleared to 0
+     id<MTLTexture> stv0 = stencil && s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? [s newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8 textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset, 1)] : nil;
+     int scopy = stv0 != nil;
+-    NSNumber *pk = @(d.pixelFormat * 2 + scopy);
++    square = square && !depth;
++    NSNumber *pk = @((d.pixelFormat * 2 + scopy) * 2 + square);
+     id<MTLRenderPipelineState> ps = pso[pk];
+     if (!ps) {
+-        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : ff;
++        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : square ? fq : ff;
+         if (depth) { pd.depthAttachmentPixelFormat = d.pixelFormat; if (stencil) pd.stencilAttachmentPixelFormat = d.pixelFormat; } else pd.colorAttachments[0].pixelFormat = d.pixelFormat;
+         NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+         if (!ps) { RED_ONCE(83, "format-converting / scaling texture copy: cannot create the pipeline for destination format %lu: %s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
+@@ -11734,6 +12660,9 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
+                                                     linear && !depth ? " (bilinear)" : "", stencil ? (scopy ? " (depth + stencil)" : " (no stencil view possible, cleared to 0)") : ""); }
+     return 1;
+ }
++static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror) {
++    return copy_t2t_draw_sq(s, d, sl, ss, dl, ds, sr, dr, linear, mirror, 0);
++}
+ // nvnCommandBufferDrawTexture: the source region of a texture (texels, through the handle's sampler) drawn into the destination region of each bound colour target (pixels in the window's
+ // coordinates, which are the targets' own rows in either window origin, since the host keeps the Switch's memory layout). Streets of Rage 4 draws each movie frame (the intro, the
+ // title's flames) into its 1920x1080 scene target this way, from a second texture pool; without it the screen stayed black. The handle's IDs are the host table's (moved to the
+@@ -12088,6 +13017,13 @@ static void sub_cut(void) {
      int n = cut_draws();
      if (!g_cb || g_enc) return;
      if ((!g_cut_copy && (n <= 0 || g_stat_draw - g_cut_draw0 < (uint64_t)n)) || g_hoist_n || g_defer_nact || g_defer_pend || g_fz.active || g_rt_merged) return;
@@ -3168,7 +3252,7 @@ index 5d7f6180..5fd8667c 100644
      if (g_cut_copy) g_copy_cuts++;
      g_cut_copy = 0;
      if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
-@@ -12095,12 +13026,17 @@ static void sub_cut(void) {
+@@ -12095,12 +13031,17 @@ static void sub_cut(void) {
      uint64_t f = atomic_load(&g_cur_frame); gpu_tag_begin(f);
      uint32_t k = g_seg++; seg_clk *sc = NULL;   // reports encoded so far keep this segment's GPU times (seg_ts)
      if (seg_ts()) { if (!g_sclk) { g_sclk = calloc(1, sizeof *g_sclk); atomic_store(&g_sclk->refs, 1); } sc = g_sclk; atomic_fetch_add(&sc->refs, 1); }
@@ -3186,7 +3270,7 @@ index 5d7f6180..5fd8667c 100644
      res_commit();
      [g_cb endCommandBuffer];
      rec_commit(g_cb, o);
-@@ -12410,8 +13346,8 @@ void mtl_exec(const uint8_t *p) {
+@@ -12410,8 +13351,8 @@ void mtl_exec(const uint8_t *p) {
                  state_op(h.op, a); tf_state_gpu(b); break; }
              case OP_PRIM_RESTART: state_op(h.op, a); break;
              case OP_RAST_DISCARD: PD("Y rasterizer discard %d", ((const p_rast_discard *)a)->on); state_op(h.op, a); break;
@@ -3197,7 +3281,7 @@ index 5d7f6180..5fd8667c 100644
              case OP_COPY_T2T: copy_t2t(a); break;
              case OP_DRAW_TEX: draw_tex(a); break;
              case OP_CLEAR_TEX: clear_tex(a); break;
-@@ -12805,15 +13741,28 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
+@@ -12805,15 +13746,28 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
      if (!v) { RED_ONCE(69, "present: cannot create a non-sRGB view of the sRGB swapchain texture (format %lu); presenting the decoded values", (unsigned long)src.pixelFormat); return src; }
      return v;
  }
@@ -3231,7 +3315,7 @@ index 5d7f6180..5fd8667c 100644
  // The valid source rectangle of a present (x, y, width, height; the crop of nvnWindowSetCrop, zero = the whole texture); 0 when it lies outside the texture
  static int present_crop_rect(id<MTLTexture> src, const int crop[4], NSUInteger r[4]) {
      r[0] = 0; r[1] = 0; r[2] = src.width; r[3] = src.height;
-@@ -12834,7 +13783,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
+@@ -12834,7 +13788,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
      present_pipeline(dst.pixelFormat);
      MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
      double dw = dst.width, dh = dst.height;
@@ -3240,7 +3324,151 @@ index 5d7f6180..5fd8667c 100644
      int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
      static double last_vp[4];   // Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
      if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
-@@ -13078,7 +14027,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
+@@ -12936,25 +13890,50 @@ enum { UP_MFX_SCALERS = 4 };
+ static up_mfx_scaler g_up_mfx[UP_MFX_SCALERS]; static int g_up_mfx_next;
+ static uint64_t g_up_mfx_n, g_up_mfx_kept;   // dispatches drawn by MetalFX, dispatches of a named shader left to it
+ void mtl_up_mfx_stats(uint64_t *n, uint64_t *kept) { *n = g_up_mfx_n; *kept = g_up_mfx_kept; }
++// The game's upscaler keys come from the runtime profile (upscaler_keys; the compiled DM_GAME_UPSCALER_KEYS without one), so a shell built with one game's profile
++// replaces the upscaler of the game framework it runs; up_n is their number
++static int up_n(void) { const char *k = dm_prof()->upscaler_keys; return *k ? (int)(strlen(k) + 1) / 17 : 0; }
+ static int up_mfx_on(void) {
+     static int v = -1;
+     if (v >= 0) return v;
+     const char *e = getenv("DM_UPSCALER"); v = e && !strcmp(e, "metalfx");
+     if (e && *e && strcmp(e, "metalfx") && strcmp(e, "game")) MLOG("[RED] DM_UPSCALER=%s: metalfx or game; keeping the game's", e);
+     if (v && !(g_q4 && [MTLFXSpatialScalerDescriptor supportsMetal4FX:g_dev])) { MLOG("upscaler: this GPU has no Metal 4 MetalFX spatial scaler; the game's own upscaler draws"); v = 0; }
+-    if (v) MLOG("upscaler (DM_UPSCALER): metalfx, the game's upscaler shaders (%d, from the shader map) are drawn by MetalFX's spatial scaler", DM_GAME_UPSCALER_N);
++    if (v) MLOG("upscaler (DM_UPSCALER): metalfx, the game's upscaler shaders (%d, from the game's profile) are drawn by MetalFX's spatial scaler", up_n());
+     return v;
+ }
+ // The colour a variant of the network takes and writes, from the sRGB curves in its code (their constants are immediates, whole bytes in the code). The variants differ inside a pack, so this is the shader's and not the game's:
+ // Bananza's all encode linear input (0.0031308, 1 / 2.4 as floats) and come in threes: no decode at the end (the output stays encoded), a decode clamped to 0-1, a decode up to 128. Splatoon Raiders' all read colour that is encoded
+ // already and come in twos: no decode, a decode clamped to 0-1 (as half floats: 0.04045, 2.4 and 1 / 12.92 rounded to 0.0404358, 2.3984375 and 0.0774536). Only the variants with linear output are drawn, in these two shapes; a variant
+ // with encoded output, or any other shape (no pack has shown one), keeps the game's shader. A constant counts from 8 uses, far fewer than a curve per channel of every output tile: two bytes also match by chance
+-enum { UP_COLOR_UNREAD, UP_COLOR_LINEAR, UP_COLOR_SRGB, UP_COLOR_KEEP };   // linear in and out: HDR mode; sRGB in, linear out: perceptual mode, then decoded; UP_COLOR_KEEP, UP_COLOR_UNREAD: the game's shader
++enum { UP_COLOR_UNREAD, UP_COLOR_LINEAR, UP_COLOR_SRGB, UP_COLOR_KEEP, UP_COLOR_ROOT };   // linear in and out: HDR mode; sRGB in, linear out: perceptual mode, then decoded; root-encoded in (gamma 2),
++                                                                                         // linear out: squared into linear, then HDR mode; UP_COLOR_KEEP, UP_COLOR_UNREAD: the game's shader
+ static int up_mfx_uses(const void *code, size_t n, const void *v, size_t w) {
+     const uint8_t *p = code, *end = p + n; int hits = 0;
+     while (hits < 8 && (p = memmem(p, end - p, v, w))) { hits++; p += w; }
+     return hits == 8;
+ }
++// Whether the code has a MUFU.EX2 or MUFU.LG2 (Ampere: opcode 0x108 in the low 9 bits, any form; the function at 74..79, EX2 2 and LG2 3), the instructions every power takes
++static int up_mfx_has_pow(const void *code, size_t n) {
++    for (size_t o = 0; o + 16 <= n; o += 16) {
++        uint64_t lo, hi; memcpy(&lo, (const uint8_t *)code + o, 8); memcpy(&hi, (const uint8_t *)code + o + 8, 8);
++        if ((lo & 0x1ff) == 0x108 && ((hi >> 10) & 0x3f) - 2 < 2) return 1;
++    }
++    return 0;
++}
++// Whether the code squares a value keeping its sign, from 8 times: FMUL (0x220) or HMUL2 (0x232) of a register by itself, with |x| on exactly one side (Ra 24..31, Rb 32..39; Rb's abs at 62, Ra's at 73;
++// HMUL2's lane swizzles, A 74..75 and B 60..61, alike). That is how a network that works on square-rooted colour turns its result back into linear colour: x * |x|
++static int up_mfx_squares(const void *code, size_t n) {
++    int hits = 0;
++    for (size_t o = 0; o + 16 <= n && hits < 8; o += 16) {
++        uint64_t lo, hi; memcpy(&lo, (const uint8_t *)code + o, 8); memcpy(&hi, (const uint8_t *)code + o + 8, 8);
++        unsigned op = lo & 0xfff, ra = (lo >> 24) & 0xff, rb = (lo >> 32) & 0xff;
++        if ((op != 0x220 && op != 0x232) || ra != rb || ra == 0xff || ((hi >> 9) & 1) == ((lo >> 62) & 1)) continue;
++        if (op == 0x232 && ((hi >> 10) & 3) != ((lo >> 60) & 3)) continue;
++        hits++;
++    }
++    return hits == 8;
++}
+ static int up_mfx_color(const void *code, size_t n) {
+ #define UP_F32(x) ({ float f_ = (x); up_mfx_uses(code, n, &f_, 4); })
+ #define UP_F16(x) ({ __fp16 f_ = (x); up_mfx_uses(code, n, &f_, 2); })
+@@ -12962,34 +13941,40 @@ static int up_mfx_color(const void *code, size_t n) {
+     int enc16 = UP_F16(0.41650390625f) || UP_F16(0.416748046875f), dec16 = UP_F16(0.040435791015625f) && UP_F16(2.3984375f) && UP_F16(0.07745361328125f);   // enc16 (1 / 2.4 either way rounded): no pack has it; it must not read as encoded input
+ #undef UP_F32
+ #undef UP_F16
++    // No sRGB curve: a curve needs a power, MUFU.EX2 and MUFU.LG2 (Splatoon Raiders' variants take theirs on packed halves), so code with neither cannot convert through one, wherever its
++    // constants come from (a constant buffer's are not in the code). It can still square: Ocarina of Time's agl_ndsr_vr.pck and agl_ndsr_vr_light.pck networks work on colour a pass
++    // before them square-rooted (gamma 2, RGB9E5F) and write their result squared, x * |x| (R11G11B10F): root-encoded input, linear output. Drawn as one colour space, the output
++    // stayed root-encoded, about the square root of the game's (washed out). Without either, input and output are in one colour space and the linear shape converts nothing
++    if (!enc32 && !dec32 && !enc16 && !dec16 && !up_mfx_has_pow(code, n)) return up_mfx_squares(code, n) ? UP_COLOR_ROOT : UP_COLOR_LINEAR;
+     return enc32 && dec32 && !enc16 && !dec16 ? UP_COLOR_LINEAR : dec16 && !enc16 && !enc32 && !dec32 ? UP_COLOR_SRGB : UP_COLOR_KEEP;
+ }
+ // Whether cs is one of the game's upscaler shaders (DM_GAME_UPSCALER_KEYS: comma-separated 16-digit keys)
+ static int up_mfx_named(NvShader *cs) {
+-    for (const char *k = DM_GAME_UPSCALER_KEYS; *k; k += k[16] == ',' ? 17 : 16) if (!strncmp(k, cs->key, 16)) return 1;
++    for (const char *k = dm_prof()->upscaler_keys; *k; k += k[16] == ',' ? 17 : 16) if (!strncmp(k, cs->key, 16)) return 1;
+     return 0;
+ }
+ static void up_mfx_read_color(NvShader *cs, const NVNshaderData *sd) {
+-    if (cs->up_color || !DM_GAME_UPSCALER_N || !up_mfx_on() || !up_mfx_named(cs)) return;
++    if (cs->up_color || !up_n() || !up_mfx_on() || !up_mfx_named(cs)) return;
+     uint32_t nctl, ncode = 0; if (sd->control) nvn_ctl_lens(sd->control, &nctl, &ncode);
+     cs->up_color = sd->data && ncode && ncode < (1u << 24) ? up_mfx_color((const void *)(uintptr_t)sd->data, ncode) : UP_COLOR_KEEP;
+-    MLOG("upscaler %s: %s", cs->key, cs->up_color == UP_COLOR_LINEAR ? "linear input and output, MetalFX in HDR mode" : cs->up_color == UP_COLOR_SRGB ? "sRGB-encoded input, linear output, MetalFX in perceptual mode" : "neither of the colour shapes MetalFX draws; the game's shader runs");
++    MLOG("upscaler %s: %s", cs->key, cs->up_color == UP_COLOR_LINEAR ? "input and output in one colour space (linear, or no sRGB curve in the code), MetalFX in HDR mode" : cs->up_color == UP_COLOR_SRGB ? "sRGB-encoded input, linear output, MetalFX in perceptual mode" : cs->up_color == UP_COLOR_ROOT ? "square-rooted input, linear output (the shader squares): squared into linear, then MetalFX in HDR mode" : "neither of the colour shapes MetalFX draws; the game's shader runs");
+ }
+ // Whether cs is one of the game's upscaler shaders, the player chose MetalFX and its colour is one MetalFX draws
+ static int up_mfx_wanted(NvShader *cs) {
+     if (cs->up_mfx) return cs->up_mfx == 1;
+     cs->up_mfx = 2;
+-    if (!DM_GAME_UPSCALER_N || !up_mfx_on()) return 0;
+-    if (up_mfx_named(cs) && (cs->up_color == UP_COLOR_LINEAR || cs->up_color == UP_COLOR_SRGB)) cs->up_mfx = 1;
++    if (!up_n() || !up_mfx_on()) return 0;
++    if (up_mfx_named(cs) && (cs->up_color == UP_COLOR_LINEAR || cs->up_color == UP_COLOR_SRGB || cs->up_color == UP_COLOR_ROOT)) cs->up_mfx = 1;
+     return cs->up_mfx == 1;
+ }
+-static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int srgb) {
+-    NSUInteger key[5] = {iw, ih, ow, oh, (NSUInteger)srgb};
++static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int color) {   // color: the variant's (UP_COLOR_LINEAR, _SRGB, _ROOT)
++    int srgb = color == UP_COLOR_SRGB;
++    NSUInteger key[5] = {iw, ih, ow, oh, (NSUInteger)color};
+     for (int i = 0; i < UP_MFX_SCALERS; i++) if (!memcmp(g_up_mfx[i].key, key, sizeof key)) return g_up_mfx[i].refused ? NULL : &g_up_mfx[i];
+     up_mfx_scaler *e = &g_up_mfx[g_up_mfx_next++ % UP_MFX_SCALERS];   // dynamic resolution moves the input: a few sizes stay made
+     if (e->read && e->read != e->out) defer_obj_unref(e->read);
+     if (e->in) { res_remove(e->in); defer_obj_release(e->in); } if (e->out) { res_remove(e->out); defer_obj_release(e->out); }   // a recorded scale still holds them
+-    *e = (up_mfx_scaler){.key = {iw, ih, ow, oh, (NSUInteger)srgb}, .refused = 1};
++    *e = (up_mfx_scaler){.key = {iw, ih, ow, oh, (NSUInteger)color}, .refused = 1};
+     NSError *err = nil; uint64_t t0 = now_ns();
+     if (!g_fx_comp) g_fx_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&err];
+     MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
+@@ -13004,7 +13989,7 @@ static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger
+         td.pixelFormat = of; td.width = ow; td.height = oh; td.usage = sc.outputTextureUsage | MTLTextureUsageShaderRead | (srgb ? MTLTextureUsagePixelFormatView : 0); out = [g_dev newTextureWithDescriptor:td];
+         read = srgb ? [out newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm_sRGB] : out;
+     }
+-    MLOG("%supscaler: MetalFX spatial scaler (%s) %lux%lu → %lux%lu%s, %.1f ms", sc && in && read ? "" : "[RED] ", srgb ? "perceptual" : "HDR", (unsigned long)iw, (unsigned long)ih, (unsigned long)ow, (unsigned long)oh,
++    MLOG("%supscaler: MetalFX spatial scaler (%s) %lux%lu → %lux%lu%s, %.1f ms", sc && in && read ? "" : "[RED] ", srgb ? "perceptual" : color == UP_COLOR_ROOT ? "HDR, input squared" : "HDR", (unsigned long)iw, (unsigned long)ih, (unsigned long)ow, (unsigned long)oh,
+          sc && in && read ? "" : ": MetalFX made none; the game's upscaler draws this size", (now_ns() - t0) / 1e6);
+     if (!sc || !in || !read) return NULL;
+     in.label = @"upscaler input"; out.label = @"upscaler output"; res_add(in); res_add(out); res_commit();
+@@ -13039,11 +14024,11 @@ static int up_mfx_encode(NvShader *cs) {
+     if (!in || !out || in == out || in.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D || in.sampleCount != 1 || out.sampleCount != 1 ||
+         fmt_int_or_ds(in.pixelFormat) || fmt_int_or_ds(out.pixelFormat) || mtl_fmt_block(out.pixelFormat) || !up_mfx_rect(v, in.width, in.height, &ir) || !up_mfx_rect(v + 4, out.width, out.height, &orr) ||
+         orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) { g_up_mfx_kept++; return 0; }
+-    int srgb = cs->up_color == UP_COLOR_SRGB;
+-    up_mfx_scaler *e = up_mfx_scaler_for((NSUInteger)ir.width, (NSUInteger)ir.height, (NSUInteger)orr.width, (NSUInteger)orr.height, srgb); if (!e) { g_up_mfx_kept++; return 0; }
++    int srgb = cs->up_color == UP_COLOR_SRGB, root = cs->up_color == UP_COLOR_ROOT;
++    up_mfx_scaler *e = up_mfx_scaler_for((NSUInteger)ir.width, (NSUInteger)ir.height, (NSUInteger)orr.width, (NSUInteger)orr.height, cs->up_color); if (!e) { g_up_mfx_kept++; return 0; }
+     id<MTL4FXSpatialScaler> sc = e->sc;
+     // Straight in and out when MetalFX can take the game's textures as they are; through the scaler's own textures otherwise
+-    int direct = !srgb && (NSUInteger)ir.width == in.width && (NSUInteger)ir.height == in.height && out.storageMode == MTLStorageModePrivate &&
++    int direct = !srgb && !root && (NSUInteger)ir.width == in.width && (NSUInteger)ir.height == in.height && out.storageMode == MTLStorageModePrivate &&
+                  in.pixelFormat == MTLPixelFormatRGBA16Float && out.pixelFormat == MTLPixelFormatRGBA16Float && !ir.xoffset && !ir.yoffset && !orr.xoffset && !orr.yoffset && (NSUInteger)orr.width == out.width &&
+                  (NSUInteger)orr.height == out.height && (in.usage & sc.colorTextureUsage) == sc.colorTextureUsage && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage;
+     if (!direct && !(out.usage & MTLTextureUsageRenderTarget)) { g_up_mfx_kept++; return 0; }
+@@ -13052,7 +14037,7 @@ static int up_mfx_encode(NvShader *cs) {
+     ubd_land_compute();
+     NVNcopyRegion at0 = {0, 0, 0, ir.width, ir.height, 1}, at0o = {0, 0, 0, orr.width, orr.height, 1};
+     id<MTLTexture> color = direct ? in : e->in, result = direct ? out : e->out;
+-    if (!direct && !copy_t2t_draw(in, color, 0, 0, 0, 0, &ir, &at0, 0, 0)) { g_up_mfx_kept++; return 0; }   // into RGBA16F at the origin (a nearest draw: same size)
++    if (!direct && !copy_t2t_draw_sq(in, color, 0, 0, 0, 0, &ir, &at0, 0, 0, root)) { g_up_mfx_kept++; return 0; }   // a root-encoded input squared into linear colour on the way   // into RGBA16F at the origin (a nearest draw: same size)
+     id<MTL4ComputeCommandEncoder> ce = [g_cb computeCommandEncoder];   // as dlss_eval: MetalFX opens encoders of its own, which take no barrier
+     [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];
+     [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
+@@ -13069,7 +14054,7 @@ static int up_mfx_encode(NvShader *cs) {
+     args_dirty_all();
+     if (!g_up_mfx_n++) MLOG("upscaler: first dispatch of %s drawn by MetalFX, %dx%d at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", cs->key, ir.width, ir.height, ir.xoffset, ir.yoffset,
+                             (unsigned long)in.width, (unsigned long)in.height, (unsigned long)in.pixelFormat, orr.width, orr.height, orr.xoffset, orr.yoffset, (unsigned long)out.width, (unsigned long)out.height,
+-                            (unsigned long)out.pixelFormat, direct ? ", straight" : srgb ? ", through RGBA16F, decoded from sRGB" : ", through RGBA16F");
++                            (unsigned long)out.pixelFormat, direct ? ", straight" : srgb ? ", through RGBA16F, decoded from sRGB" : root ? ", squared into RGBA16F" : ", through RGBA16F");
+     return 1;
+ }
+ // The present pass: src's valid rectangle drawn into dst (the drawable, or a screenshot's texture) as present_encode draws it, through MetalFX first where fx_encode takes it
+@@ -13078,7 +14063,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
      NSUInteger r[4]; if (!present_crop_rect(src, crop, r)) return 0;
      present_pipeline(dst.pixelFormat);
      double dw = dst.width, dh = dst.height;
@@ -3249,7 +3477,7 @@ index 5d7f6180..5fd8667c 100644
      int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
      id<MTLTexture> tex = present_raw_src(src), up = fx ? fx_encode(fx, cb, tex, r, vp, dst.pixelFormat, fx == &g_fx_present) : nil;
      if (up) { tex = up; r[0] = r[1] = 0; r[2] = up.width; r[3] = up.height; }   // the scaled picture, the viewport's size: drawn 1:1
-@@ -13161,9 +14110,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -13161,9 +14146,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }
      // The picture's shape for the front end's layout (front.h front_picture_shape): reported when its width / height changes by more than 0.1 %, not on a size change of the same
      // shape (1280x720 handheld, 1920x1080 docked)
@@ -3261,7 +3489,7 @@ index 5d7f6180..5fd8667c 100644
      // A texture made on first resolution joins the residency set (res_add), which a submission commits; a window texture presented before any submission has used it was still
      // outside the committed set when the display command buffer sampled it. Super Smash Bros. Ultimate presents its window texture in its first frames before drawing into it:
      // the display queue page-faulted (kIOGPUCommandBufferCallbackErrorPageFault) and macOS then ignored every later command buffer of the process, so the window stayed pink
-@@ -13647,6 +14595,8 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
+@@ -13647,6 +14631,8 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
      pthread_mutex_unlock(&g_pq_mu);
      return ss ? 0 : tk;   // a snapshot: the game's texture is free now (its later draws come after the copy on the queue)
  }
@@ -5296,6 +5524,75 @@ index 80f007a4..ca3cf243 100644
 +    cube_views(library);
      printf("tex_fit views from the root: %d checks, %d failed\n", checks, failed); return failed != 0;
  } }
+diff --git a/dm/gfx/tests/t_upscaler_mfx.m b/dm/gfx/tests/t_upscaler_mfx.m
+index 7d565708..9c99884b 100644
+--- a/dm/gfx/tests/t_upscaler_mfx.m
++++ b/dm/gfx/tests/t_upscaler_mfx.m
+@@ -2,7 +2,7 @@
+ // 1920x1080 image is replaced by the spatial scaler, which fills the whole image with the texture's colour; equal sizes, another shader, and DM_UPSCALER unset
+ // (the last run) leave the dispatch to the shader. Runs under any profile: the named shader is the profile's first upscaler (DM_GAME_UPSCALER_KEYS), and a profile with
+ // none swaps no shader; the MetalFX draw itself (up_mfx_encode) does not look at the key. The colour (up_mfx_color) comes from synthetic code holding the curves' constants: a variant with sRGB input
+-// comes out decoded to linear, and one whose output stays encoded is left to its shader
++// comes out decoded to linear, one whose code squares its result (square-rooted input) comes out squared, and one whose output stays encoded is left to its shader
+ #include "../nvn/nvn_mtl.m"
+ void *front_metal_layer(void) { return NULL; }
+ module_t *module_of(const void *p) { (void)p; return NULL; }
+@@ -62,10 +62,38 @@ int main(void) { @autoreleasepool {
+     CHECK(color_of(both, 4, NULL, 0) == UP_COLOR_LINEAR, "an encode and a decode in floats: linear input and output (Bananza)");
+     CHECK(color_of(NULL, 0, dec16, 3) == UP_COLOR_SRGB, "only a decode, in half floats: sRGB input, linear output (Splatoon Raiders)");
+     CHECK(color_of(enc, 2, NULL, 0) == UP_COLOR_KEEP, "an encode with no decode: the output stays encoded, the shader runs");
+-    CHECK(color_of(NULL, 0, NULL, 0) == UP_COLOR_KEEP, "no curve: the output stays encoded, the shader runs");
++    CHECK(color_of(NULL, 0, NULL, 0) == UP_COLOR_LINEAR, "no curve and no power: input and output in one colour space, drawn with no conversion (Ocarina of Time's agl_ndsr_vr.pck)");
++    {   // no curve constant, but a MUFU.LG2 / MUFU.EX2: its curves may take their constants from a constant buffer
++        uint8_t code[4096] = {0};
++        for (int f = 2; f <= 3; f++) {
++            memset(code, 0, sizeof code);
++            uint64_t lo = 0x308, hi = (uint64_t)f << 10; memcpy(code + 256, &lo, 8); memcpy(code + 264, &hi, 8);   // MUFU (register form), function EX2 / LG2
++            CHECK(up_mfx_color(code, sizeof code) == UP_COLOR_KEEP, "no curve constant but a power (MUFU.EX2 / MUFU.LG2): the shader runs");
++        }
++        uint64_t lo = 0x308, hi = (uint64_t)4 << 10; memset(code, 0, sizeof code); memcpy(code + 256, &lo, 8); memcpy(code + 264, &hi, 8);   // MUFU.RCP: no power
++        CHECK(up_mfx_color(code, sizeof code) == UP_COLOR_LINEAR, "a MUFU that is no power (RCP) does not count as a curve");
++    }
++    {   // no curve, but a value squared keeping its sign, x * |x|: a network on square-rooted colour writing linear colour (Ocarina of Time's agl_ndsr_vr.pck FMUL, agl_ndsr_vr_light.pck HMUL2)
++        uint8_t code[4096];
++        const struct { unsigned op; int abs_a, abs_b, n, want; const char *label; } cases[] = {
++            {0x220, 0, 1, 8, UP_COLOR_ROOT, "FMUL x, |x| 8 times: square-rooted input, linear output"},
++            {0x232, 1, 0, 8, UP_COLOR_ROOT, "HMUL2 |x|, x 8 times: square-rooted input, linear output"},
++            {0x220, 0, 0, 8, UP_COLOR_LINEAR, "a plain square (no |x|) is no sign-keeping square: one colour space"},
++            {0x220, 1, 1, 8, UP_COLOR_LINEAR, "|x| * |x| is no sign-keeping square: one colour space"},
++            {0x220, 0, 1, 7, UP_COLOR_LINEAR, "7 squares are chance, not the output's"},
++        };
++        for (size_t c = 0; c < sizeof cases / sizeof *cases; c++) {
++            memset(code, 0, sizeof code);
++            for (int i = 0; i < cases[c].n; i++) {
++                uint64_t lo = cases[c].op | (uint64_t)(10 + i) << 24 | (uint64_t)(10 + i) << 32 | (uint64_t)cases[c].abs_b << 62, hi = (uint64_t)cases[c].abs_a << 9;
++                memcpy(code + 16 * i, &lo, 8); memcpy(code + 16 * i + 8, &hi, 8);
++            }
++            CHECK(up_mfx_color(code, sizeof code) == cases[c].want, cases[c].label);
++        }
++    }
+     CHECK(color_of(dec, 2, NULL, 0) == UP_COLOR_KEEP, "a shape no pack has shown (a decode in floats, no encode): the shader runs");
+     CHECK(color_of(NULL, 0, (const float[4]){0.040435791015625f, 2.3984375f, 0.07745361328125f, enc16[0]}, 4) == UP_COLOR_KEEP, "a half float encode must not read as encoded input: the shader runs");
+-    CHECK(up_mfx_color(rare, sizeof rare) == UP_COLOR_KEEP, "a constant used once is chance, not a curve");
++    CHECK(up_mfx_color(rare, sizeof rare) != UP_COLOR_SRGB, "a constant used once is chance, not a curve");
+     const char *up = getenv("DM_UPSCALER"); int on = up && !strcmp(up, "metalfx");
+     tex_t in = texture(77, 960, 540, NVN_FORMAT_RGBA16F), out = texture(78, 1920, 1080, NVN_FORMAT_RGBA16F), same = texture(79, 960, 540, NVN_FORMAT_RGBA16F);
+     out.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; same.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
+@@ -128,6 +156,14 @@ int main(void) { @autoreleasepool {
+         CHECK(up_mfx_encode(named), "linear input after sRGB at the same sizes");
+         CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the second linear submission completes");
+         CHECK(matches(written, colour, MTLRegionMake2D(0, 0, 1920, 1080), black), "the same sizes in linear colour are not decoded: each colour has its own scaler");
++        // Square-rooted input, linear output: the image holds the input squared (0.5, 0.25, 0.75 → 0.25, 0.0625, 0.5625), as the game's shader writes it
++        named->up_color = UP_COLOR_ROOT;
++        const float squared[4] = {0.25f, 0.0625f, 0.5625f, 1.0f};
++        fill(written, MTLClearColorMake(0, 0, 0, 1)); mtl_sub_begin();
++        CHECK(up_mfx_encode(named), "MetalFX takes square-rooted input");
++        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull) && !mtl_last_commit_error(), "the square-rooted submission completes");
++        CHECK(matches(written, squared, MTLRegionMake2D(0, 0, 1920, 1080), black), "the square-rooted input comes out squared into linear colour");
++        named->up_color = UP_COLOR_LINEAR;
+         NvShader *encoded_out = upscaler(key); encoded_out->up_color = UP_COLOR_KEEP;
+         CHECK(!up_mfx_wanted(encoded_out), "a named shader whose output stays encoded is left to its shader");
+         S.tex[5][0] = 701;
 diff --git a/dm/gfx/tests/test_dmsh_ampere_alu.py b/dm/gfx/tests/test_dmsh_ampere_alu.py
 index 2677a608..a7f80266 100644
 --- a/dm/gfx/tests/test_dmsh_ampere_alu.py
@@ -7848,6 +8145,73 @@ index 59ff9697..51bcda16 100644
  HLE_FORCE("nnsocketGetAddrInfo", "name resolution (cut): EAI_FAIL", int, h_c_sk_Gai, const char *h, const char *s, const void *hint, void **res) { (void)h; (void)s; (void)hint; if (res) *res = NULL; return SK_EAI_FAIL; }
  HLE_FORCE("nnsocketFreeAddrInfo", "pairs with GetAddrInfo (cut)", void, h_c_sk_FreeAi, void *ai) { (void)ai; }
  HLE_FORCE("nnsocketGAIStrError", "resolver error text", const char *, h_c_sk_GaiStr, int e) { (void)e; return "network unavailable"; }
+diff --git a/dm/host/hle_profile.c b/dm/host/hle_profile.c
+index ba22ff70..ba6921a8 100644
+--- a/dm/host/hle_profile.c
++++ b/dm/host/hle_profile.c
+@@ -100,6 +100,12 @@ static uint64_t num(const char *v, uint64_t dflt) {
+ #ifndef DM_GAME_GPU_TS_SEGMENT
+ #define DM_GAME_GPU_TS_SEGMENT 0
+ #endif
++#ifndef DM_GAME_DRAW_BARRIERS_GAME
++#define DM_GAME_DRAW_BARRIERS_GAME 0
++#endif
++#ifndef DM_GAME_UPSCALER_KEYS
++#define DM_GAME_UPSCALER_KEYS ""
++#endif
+ #ifndef DM_GAME_VCONV_RANGE
+ #define DM_GAME_VCONV_RANGE 0
+ #endif
+@@ -152,7 +158,7 @@ static void defaults(void) {
+     P.pad_layout = DM_GAME_PAD_LAYOUT; P.opmode = DM_GAME_OPMODE; P.perf_boost = DM_GAME_PERF_BOOST;
+     copy_str(P.feedback_snap, sizeof P.feedback_snap, DM_GAME_FEEDBACK_SNAP);
+     P.tex_flush_upload = DM_GAME_TEX_FLUSH_UPLOAD; P.render_cond = DM_GAME_RENDER_COND; P.tex_dirty_upload = DM_GAME_TEX_DIRTY_UPLOAD;
+-    P.tex_dyn_slots = DM_GAME_TEX_DYN_SLOTS; P.gpu_ts_segment = DM_GAME_GPU_TS_SEGMENT; P.vconv_range = DM_GAME_VCONV_RANGE;
++    P.tex_dyn_slots = DM_GAME_TEX_DYN_SLOTS; P.gpu_ts_segment = DM_GAME_GPU_TS_SEGMENT; P.draw_barriers_game = DM_GAME_DRAW_BARRIERS_GAME; copy_str(P.upscaler_keys, sizeof P.upscaler_keys, DM_GAME_UPSCALER_KEYS); P.vconv_range = DM_GAME_VCONV_RANGE;
+ #ifdef DM_GAME_NVN_API_MAJOR
+     P.nvn_api_major = DM_GAME_NVN_API_MAJOR; P.nvn_api_minor = DM_GAME_NVN_API_MINOR;
+ #else
+@@ -218,6 +224,8 @@ static void set_kv(const char *k, const char *v) {
+     else if (!strcmp(k, "tex_dirty_upload")) P.tex_dirty_upload = truthy(v);
+     else if (!strcmp(k, "tex_dyn_slots")) P.tex_dyn_slots = truthy(v);
+     else if (!strcmp(k, "gpu_timestamps")) P.gpu_ts_segment = !strcmp(v, "segment") || !strcmp(v, "1");
++    else if (!strcmp(k, "draw_barriers")) P.draw_barriers_game = !strcmp(v, "game") || !strcmp(v, "1");
++    else if (!strcmp(k, "upscaler_keys")) copy_str(P.upscaler_keys, sizeof P.upscaler_keys, !strcmp(v, "none") ? "" : v);
+     else if (!strcmp(k, "vconv_range")) P.vconv_range = truthy(v);
+     else if (!strcmp(k, "device_api")) { char *e; P.nvn_api_major = (int)strtol(v, &e, 10); if (e && *e == '.') P.nvn_api_minor = atoi(e + 1); }
+     else if (!strcmp(k, "stdalloc_cap")) P.stdalloc_cap = num(v, P.stdalloc_cap);
+@@ -265,7 +273,7 @@ static void read_env(void) {
+     static const char *keys[] = {"TITLE_ID","NAME","ROMFS_MARKER","PROGRAM_ID","MODULES","MEM_RESERVE","MEM_ALIAS","MEM_STACK","APP_POOL",
+         "MEM_USED","SYS_RESOURCE","MEM_MAP_LIMIT","PRESENT_INTERVAL","CORE_PREEMPT","ALLOC_BIG_ALIGN","FPS_TARGET","FPS_HOLD","PRESENT_SNAP",
+         "PSO_MTL4","SHARED_FONT","PAD_LAYOUT","OP_MODE","PERF_MODE","FEEDBACK_SNAP","TEX_FLUSH_UPLOAD","RENDER_COND","TEX_DIRTY_UPLOAD",
+-        "TEX_DYN_SLOTS","GPU_TIMESTAMPS","VCONV_RANGE","DEVICE_API","STDALLOC_CAP","SHADER_KEY_SKIP","TEX_BC_CPU","UE_TEXTURE_POOL","ENC_THREAD","GAME_ARGS","GAME_ENV", NULL};
++        "TEX_DYN_SLOTS","GPU_TIMESTAMPS","DRAW_BARRIERS","UPSCALER_KEYS","VCONV_RANGE","DEVICE_API","STDALLOC_CAP","SHADER_KEY_SKIP","TEX_BC_CPU","UE_TEXTURE_POOL","ENC_THREAD","GAME_ARGS","GAME_ENV", NULL};
+     char k[64], name[96];
+     for (int i = 0; keys[i]; i++) {
+         snprintf(k, sizeof k, "%s", keys[i]);
+@@ -307,6 +315,7 @@ void dm_profile_log(void) {
+     LOG("  graphics flush %d dirty %d rcond %d dynslots %d gputs %d vconv %d nvn_api %d.%d  versions %d",
+         p->tex_flush_upload, p->tex_dirty_upload, p->render_cond, p->tex_dyn_slots, p->gpu_ts_segment, p->vconv_range,
+         p->nvn_api_major, p->nvn_api_minor, p->nver);
+-    LOG("  more stdalloc_cap %#llx key_skip %#x+%#x bc_cpu %d ue_pool %d enc_thread %d",
+-        (unsigned long long)p->stdalloc_cap, p->shader_skip_off, p->shader_skip_len, p->tex_bc_cpu, p->ue_texture_pool, p->enc_thread);
++    LOG("  more stdalloc_cap %#llx key_skip %#x+%#x bc_cpu %d ue_pool %d enc_thread %d upscaler_keys %d",
++        (unsigned long long)p->stdalloc_cap, p->shader_skip_off, p->shader_skip_len, p->tex_bc_cpu, p->ue_texture_pool, p->enc_thread,
++        p->upscaler_keys[0] ? (int)(strlen(p->upscaler_keys) + 1) / 17 : 0);
+ }
+diff --git a/dm/host/hle_profile.h b/dm/host/hle_profile.h
+index 5afd846b..944e5ad8 100644
+--- a/dm/host/hle_profile.h
++++ b/dm/host/hle_profile.h
+@@ -29,6 +29,8 @@ struct dm_profile {
+     int pad_layout, opmode, perf_boost;
+     char feedback_snap[DM_PROF_STR];
+     int tex_flush_upload, render_cond, tex_dirty_upload, tex_dyn_slots, gpu_ts_segment, vconv_range;
++    int draw_barriers_game;      // draw_barriers game: draw passes ordered by the game's own barriers (nvn_mtl.m barrier_game)
++    char upscaler_keys[2048];    // upscaler_keys: the game's own upscaler compute shaders, comma-separated 16-digit keys (nvn_mtl.m up_is_key; DM_UPSCALER=metalfx)
+     int nvn_api_major, nvn_api_minor;   // major 0 = decide by the SDK version (hle_nvn.c nvn_api)
+     uint64_t stdalloc_cap;       // StandardAllocator's address space (hle_svc.c); 0 = what the alias region has room for
+     uint32_t shader_skip_off, shader_skip_len;   // shader_key_skip <offset>+<length>: control bytes the shader keys hash as zeros (len 0 = none)
 diff --git a/dm/host/hle_sdk16.c b/dm/host/hle_sdk16.c
 index 6d397ff5..6cd4f050 100644
 --- a/dm/host/hle_sdk16.c
@@ -10457,6 +10821,36 @@ index 5526c1f8..1eb64828 100644
      def test_unreadable_member(self):
          with self.assertRaises(ValueError): NS['reflect']('k', 'ps', MSL.replace('raster_order_group(0)', 'raster_order_group'), {'sbufs': []})
  
+diff --git a/dm/tools/tests/test_game_profile.py b/dm/tools/tests/test_game_profile.py
+index ca9b2299..212ea26f 100644
+--- a/dm/tools/tests/test_game_profile.py
++++ b/dm/tools/tests/test_game_profile.py
+@@ -1,5 +1,5 @@
+ # dm/games/game.py's profile-key validation, on a synthetic profile: pso_gpu (the GPU architectures the app's offline pipeline archive is made for, beside pso_mtl4) takes, none and no others,
+-# and a profile without the key generates its header unchanged; the game's upscaler shaders (the launcher's Game's upscaler) are the compute shaders its shader map found in agl_ndsr.pck
++# and a profile without the key generates its header unchanged; the game's upscaler shaders (the launcher's Game's upscaler) are the compute shaders its shader map found in agl_ndsr.pck (and its _vr / _vr_light variants)
+ from pathlib import Path
+ import os
+ import subprocess
+@@ -46,7 +46,8 @@ MAP = ('# kind: evidence  Test shaders\n# column 5 records where each key first
+        'cs_other.bin\t2\tcompute\t7629d857a0a93833\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.debug.sarc.zs/agl_ndsr.pck#NDSR@0xeb4c0\n'
+        'cs_other.bin\t3\tcompute\t7629d857a0a93833\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x124a00\n'   # a key twice: once
+        'ps_other.bin\t4\tpixel\t0e423e497f1e3355\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr.pck#NDSR@0x1247d8\n'   # the pack's draw shaders: not the upscaler
+-       'cs_other.bin\t5\tcompute\t0123456789abcdef\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_common.sharcb#BAHS@0x40\n')
++       'cs_other.bin\t5\tcompute\t0123456789abcdef\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_common.sharcb#BAHS@0x40\n'
++       'cs_other.bin\t6\tcompute\tfa3033d05c0a41d6\t/Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs/agl_ndsr_vr_light.pck#NDSR@0x84900\n')   # Ocarina of Time's VR packs: upscalers too
+ 
+ 
+ def macros(shader_map):
+@@ -64,7 +65,7 @@ class UpscalerKeys(unittest.TestCase):
+         none = ['#define DM_GAME_UPSCALER_KEYS ""', '#define DM_GAME_UPSCALER_N 0']   # the launcher hides the setting
+         self.assertEqual(macros(None), none)
+         self.assertEqual(macros(MAP.split('cs_other.bin')[0]), none)
+-        self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af"', '#define DM_GAME_UPSCALER_N 2'])
++        self.assertEqual(macros(MAP), ['#define DM_GAME_UPSCALER_KEYS "7629d857a0a93833,c56db3d5a0f1b5af,fa3033d05c0a41d6"', '#define DM_GAME_UPSCALER_N 3'])
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/dm/tools/tests/test_nlg4.py b/dm/tools/tests/test_nlg4.py
 new file mode 100644
 index 00000000..cfeeb93b
