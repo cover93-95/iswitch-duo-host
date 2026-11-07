@@ -69,6 +69,8 @@ jobs:
           python3 tools/engine.py sync
           # Moteur oot5 : nxnative main 24fe1e5a + PR 1584, 1497, 1453, 1368, 1379 + patchs NX2Apple (profil draw_barriers lu au lancement) ; sources publiques uniquement.
           git -C engine apply "$GITHUB_WORKSPACE/oot/engine-oot.diff"
+          # Bibliotheque : boites de jeu debout, reflets, selection lumineuse (interface seulement, aucune donnee de jeu).
+          git apply "$GITHUB_WORKSPACE/oot/frontend-ios.diff"
           grep -q "\"$EXPECTED_CHAIN\"" engine/dm/gfx/nvn/dmsh_chain.h
 
       - name: Marker framework
@@ -104,7 +106,7 @@ jobs:
 
           DM_BUNDLE_ID: local.iswitchduo.botw
           DM_SHELL_NAME: NX2 Switch 2
-          DM_APP_VERSION: 1.4.6
+          DM_APP_VERSION: 1.4.7
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
