@@ -1,8 +1,12 @@
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index e179f3c..366b722 100644
+index e179f3c..1e6fad1 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-@@ -52,17 +52,19 @@ struct CoverFlowView: View, Equatable {
+@@ -48,23 +48,25 @@ struct CoverFlowView: View, Equatable {
+             // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
+             // bottom edge, and never so wide that the neighbours vanish.
+             let height = geometry.size.height
+-            let middle = (height + screenInsets.top + screenInsets.bottom) / 2 - screenInsets.top
              let gap: CGFloat = short ? 10 : 24
              let words = Self.infoHeight(short: short)
              let below: CGFloat = short ? 4 : 56          // the hint row on a tablet, a margin on a phone
@@ -10,12 +14,13 @@ index e179f3c..366b722 100644
 -            let byTop = 2 * (middle - Self.barTop(short: short) - Self.barHeight - (short ? 6 : 16))
 -            let cardHeight = max(90, min(byBottom, byTop, geometry.size.width * 0.54 * 9 / 16) / 1.06)
 -            let cover = cardHeight * 16 / 9
-+            // Boxes stand upright (boxRatio wide for 1 tall) with their reflection under them (reflection of the height):
-+            // half the box, the reflection, the gap, the title and the hints fit under the middle.
-+            let byBottom = (height - middle - gap - words - below) / (0.53 + Self.reflection)
-+            let byTop = 2 * (middle - Self.barTop(short: short) - Self.barHeight - (short ? 6 : 16)) / 1.06
-+            let cardHeight = max(90, min(byBottom, byTop, geometry.size.width * 0.30 / Self.boxRatio))
++            // Boxes stand upright (boxRatio wide for 1 tall) with their reflection under them: the box and its reflection
++            // take all the height between the top bar and the title, centred in it.
++            let topEdge = Self.barTop(short: short) + Self.barHeight + (short ? 6 : 16)
++            let room = height - topEdge - gap - words - below
++            let cardHeight = max(90, min(room / (1.06 + Self.reflection), geometry.size.width * 0.34 / Self.boxRatio))
 +            let cover = cardHeight * Self.boxRatio
++            let cardTop = topEdge + max(0, (room - cardHeight * (1.06 + Self.reflection)) / 2)
              ZStack(alignment: .top) {
                  VStack(spacing: 0) {
                      Group {
@@ -25,8 +30,11 @@ index e179f3c..366b722 100644
 -                        .padding(.top, gap).padding(.horizontal, 24)
 +                        .padding(.top, gap + cardHeight * Self.reflection).padding(.horizontal, 24)
                  }
-                 .padding(.top, middle - cardHeight * 1.06 / 2)
+-                .padding(.top, middle - cardHeight * 1.06 / 2)
++                .padding(.top, cardTop)
                  .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                 topBar(short: short).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
+                 if !short {
 @@ -84,11 +86,15 @@ struct CoverFlowView: View, Equatable {
          }
      }
