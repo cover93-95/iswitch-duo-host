@@ -254,7 +254,7 @@ index 61977287..558a02d4 100644
 -#define DMSH_CHAIN "223f10d34f97"
 +#define DMSH_CHAIN "3ee52af3ca18"
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
-index 2080367a..55c1e1f6 100644
+index 2080367a..dc5e2319 100644
 --- a/dm/gfx/nvn/hle_nvn.c
 +++ b/dm/gfx/nvn/hle_nvn.c
 @@ -246,9 +246,10 @@ NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool
@@ -596,7 +596,7 @@ index 2080367a..55c1e1f6 100644
          char tc[400]; dm_thread_cpu(tc, sizeof tc, s);
          LOG("[nvn] threads up to frame %llu: CPU %s", frame, tc); }
      else { char yt[192], rs[400], tc[400]; dm_yield_top(yt, sizeof yt); mtl_res_stats(rs, sizeof rs); dm_thread_cpu(tc, sizeof tc, 1); }   // the first call only takes the baselines
-@@ -1894,6 +2000,37 @@ static int fstep_hold(void) {
+@@ -1894,6 +2000,39 @@ static int fstep_hold(void) {
  }
  // Once per present, before this frame's period is taken: the time since the previous frame's start (shown) and the frame's cost decide this frame's hold and the next frame's step.
  // Cost = max(CPU: the time between the frames' starts without the pacing wait, GPU: the latest finished frame's GPU time), in vsyncs
@@ -604,15 +604,17 @@ index 2080367a..55c1e1f6 100644
 +// 60 fps it ships at, so under the host's 30 fps step it sits at its lowest size (854x480 on the iPhone, at 12-15 ms of GPU work in a 33 ms frame) and the picture is soft.
 +// The host raises a floor under the game's scale while the GPU has time left in the frame's hold and lowers it before the GPU runs out: a mean of the finished frames' GPU
 +// time over 30 presents, raised by 0.05 below 70% of the hold, lowered by 0.05 above 85% (80% when the device is hot), from 0.5 up to the ceiling (+0x10, DM_RENDER_SCALE);
-+// under 0.5 the floor is 0 and the game's own choice stands. DM_RES_FLOOR=off turns it off; =<0.5..1> pins it (measurement); on by default for Ocarina of Time only (the
-+// stub that reads +0x14), since another game's page may use the word
++// under 0.5 the floor is 0 and the game's own choice stands. DM_RES_FLOOR=auto turns it on, =<0.5..1> pins it (measurement); off by default. Only for a build whose stub
++// reads +0x14 (Ocarina of Time), since another game's page may use the word
 +static void res_tick(double gpu_ms, double hold_ms) {
 +    static int on = -1; static float pinned; static double sum; static int n, nlog; static float floor_v;
 +    if (on < 0) {
 +        const char *e = getenv("DM_RES_FLOOR"); on = 0;
 +        if (e && !strcmp(e, "off")) LOG("[nvn] resolution floor: off (DM_RES_FLOOR)");
 +        else if (e && *e && strcmp(e, "auto")) { char *end; float f = strtof(e, &end); if (end != e && !*end && f >= 0.5f && f <= 1.0f) { pinned = f; on = 1; LOG("[nvn] resolution floor pinned at %.2f (DM_RES_FLOOR)", f); } else LOG("[RED] DM_RES_FLOOR=%s: off, auto or 0.5 to 1.0; off", e); }
-+        else if (!strcmp(dm_prof()->id, "0400486024DEC000")) { on = 1; LOG("[nvn] resolution floor: raised under the game's dynamic resolution while the GPU has time left in the frame (DM_RES_FLOOR=off turns it off)"); }
++        else if (e && !strcmp(e, "auto")) { on = 1; LOG("[nvn] resolution floor: raised under the game's dynamic resolution while the GPU has time left in the frame (DM_RES_FLOOR=auto)"); }
++        // Off by default: under a 30 fps hold iOS lowers the GPU clock to the longer deadline, so the GPU time it measures (28-30 ms on the iPhone where 60 fps takes 15 ms)
++        // says nothing about the time left; at a 60 fps target the game's own dynamic resolution already reaches 1440x810 there
 +    }
 +    if (!on || !dm_fps_state || hold_ms <= 0) return;
 +    float ceil_v; memcpy(&ceil_v, dm_fps_state + 0x10, 4); if (!(ceil_v > 0.0f && ceil_v < 1.0f)) ceil_v = 1.0f;
@@ -634,7 +636,7 @@ index 2080367a..55c1e1f6 100644
  static void fstep_tick(const win_t *o, int c) {
      static uint64_t prev, t0, v0, fixed_sum, held[FSTEP_MAX + 1]; static int nlog;
      const double v = 1e9 / fstep_hz();
-@@ -1927,6 +2064,7 @@ static void fstep_tick(const win_t *o, int c) {
+@@ -1927,6 +2066,7 @@ static void fstep_tick(const win_t *o, int c) {
      g_fs.ramp = mtl_probe_ramp_on();
      g_fs.per_vsync = fstep_hz() / 60;
      int n = nvn_fstep_next(&g_fs, shown, cost, kmin, kmax, fixed, cslow || gslow);
@@ -642,7 +644,7 @@ index 2080367a..55c1e1f6 100644
      if (dm_fps_state) __atomic_store_n((uint32_t *)(dm_fps_state + 0x20), (uint32_t)n, __ATOMIC_RELAXED);
      atomic_store(&g_fs_k, g_fs.k);
      held[g_fs.k]++; if (fixed) fixed_sum += (uint64_t)n;   // the stubs count only the host's steps
-@@ -2084,6 +2222,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
+@@ -2084,6 +2224,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
          uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
      prev_in = t0; prev_pass = ps; prev_draw = dr;
      dump_frame();
@@ -650,7 +652,7 @@ index 2080367a..55c1e1f6 100644
      if (g_frame % TWIN == 0) tsummary(g_frame);
      mtl_set_frame(g_frame);
      // Real-device semantics: present only enqueues and returns immediately; this frame's display time is scheduled by the pacer, and the texture can be acquired again only at "display time + one period" (blocking in AcquireTexture)
-@@ -2134,6 +2273,7 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b)
+@@ -2134,6 +2275,7 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b)
      // compressing encoder (when the pause menu opens, and near a save commit): the buffer's one use is a texture-to-buffer copy of the picture's own extent, which lies inside the pool. Not an error by itself: one line.
      if ((uint64_t)bb->off + bb->size > bb->pool->size) ONCE_LOG("BufferInitialize: a buffer reaches past the end of its pool (offset %#llx size %#llx pool %#llx); only an access that leaves the pool is an error, and it is reported where it happens", (unsigned long long)bb->off, (unsigned long long)bb->size, (unsigned long long)bb->pool->size);
      *(buf_t *)buf = (buf_t){.magic = MAGIC('B', 'U', 'F', 0), .pool = bb->pool, .off = bb->off, .size = bb->size};
@@ -658,7 +660,7 @@ index 2080367a..55c1e1f6 100644
      OLOG("BufferInitialize %p pool=%p off=%#llx size=%#llx", (void *)buf, (const void *)bb->pool, (unsigned long long)bb->off, (unsigned long long)bb->size);
      return 1;
  }
-@@ -2300,6 +2440,7 @@ NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappi
+@@ -2300,6 +2442,7 @@ NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappi
          if (o->mem && o->mem != base) { LOG("[RED] MapVirtual: non-contiguous mapping (true sparse) not implemented: virtual pool %p already maps to %p, this request wants %p", (void *)o, (void *)o->mem, (void *)base); return 0; }
          if (!o->mem) LOG("[nvn] MapVirtual: the storage of virtual pool %p (%#llx bytes) points at physical pool %p + %#llx", (void *)o, (unsigned long long)o->size, (const void *)ph, (unsigned long long)(r[i].poff - r[i].voff));
          o->mem = base;
@@ -666,7 +668,7 @@ index 2080367a..55c1e1f6 100644
      }
      return 1;
  }
-@@ -2382,6 +2523,7 @@ NVN(nvnBlendStateGetBlendEquation, void, const NVNblendState *s, NVNblendEquatio
+@@ -2382,6 +2525,7 @@ NVN(nvnBlendStateGetBlendEquation, void, const NVNblendState *s, NVNblendEquatio
  }
  NVN(nvnBlendStateGetAdvancedMode, NVNblendAdvancedMode, const NVNblendState *s) { return (NVNblendAdvancedMode)((const blend_st *)s)->adv; }
  NVN(nvnBlendStateGetAdvancedPremultipliedSrc, NVNboolean, const NVNblendState *s) { return !((const blend_st *)s)->adv_npm; }
@@ -674,7 +676,7 @@ index 2080367a..55c1e1f6 100644
  NVN(nvnBlendStateGetAdvancedOverlap, NVNblendAdvancedOverlap, const NVNblendState *s) { return (NVNblendAdvancedOverlap)((const blend_st *)s)->adv_ovl; }
  NVN(nvnPolygonStateGetCullFace, NVNface, const NVNpolygonState *s) { return (NVNface)((const poly_st *)s)->cull; }
  NVN(nvnPolygonStateGetFrontFace, NVNfrontFace, const NVNpolygonState *s) { return (NVNfrontFace)((const poly_st *)s)->front; }
-@@ -2645,6 +2787,7 @@ NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uin
+@@ -2645,6 +2789,7 @@ NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uin
  // Logged once each with the first value; open: what the values select on the console
  NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int mode) { (void)c; ONCE_LOG("nvnCommandBufferSetRecordingMode %d: the host records every command buffer alike", mode); }
  NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int mode) { (void)c; ONCE_LOG("nvnCommandBufferSetGeometryProcessingMode %d: no effect on Metal", mode); }
@@ -682,7 +684,7 @@ index 2080367a..55c1e1f6 100644
  NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int mode) { (void)c; ONCE_LOG("nvnCommandBufferSetComputeOverlapMode %d: the host runs compute in submission order", mode); }
  
  // nvnProgramSetSampleShading (NVN 53+): whether the program's fragment shader runs once per sample of a multisampled target. Metroid Prime Remastered sets it on its programs
-@@ -2872,7 +3015,7 @@ static void rec_downsample(NVNcommandBuffer *c, const NVNtexture *s, const NVNte
+@@ -2872,7 +3017,7 @@ static void rec_downsample(NVNcommandBuffer *c, const NVNtexture *s, const NVNte
      p_copy_t2t *o = REC_SNAP(c, OP_COPY_T2T, p_copy_t2t, 2);
      o->src = tex_snap(o, SNAP_OFF(p_copy_t2t), 0, s, ra); o->dst = tex_snap(o, SNAP_OFF(p_copy_t2t), 1, d, ra);
      copy_view(&o->sv, &o->has_sv, sv); copy_view(&o->dv, &o->has_dv, dv);
@@ -691,7 +693,7 @@ index 2080367a..55c1e1f6 100644
      if (o->src) o->sr = (NVNcopyRegion){0, 0, 0, (int)o->src->d.width, (int)o->src->d.height, 1};
      if (o->dst) o->dr = (NVNcopyRegion){0, 0, 0, (int)o->dst->d.width, (int)o->dst->d.height, 1};
      o->flags = DM_COPY_RESOLVE;
-@@ -2900,6 +3043,17 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
+@@ -2900,6 +3045,17 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
          }
      return 0;
  }
@@ -709,7 +711,7 @@ index 2080367a..55c1e1f6 100644
  static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
      if (!t->mem) { LOG("[RED] WriteTexels: texture has no storage"); return; }
      int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-@@ -2955,7 +3109,7 @@ int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NV
+@@ -2955,7 +3111,7 @@ int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NV
      int nz = r->depth ? r->depth : 1;
      for (int z = 0; z < nz; z++) {
          unsigned layer = layer0 + (unsigned)(r->zoffset + z);
@@ -718,7 +720,7 @@ index 2080367a..55c1e1f6 100644
      }
      return 0;
  }
-@@ -2970,7 +3124,7 @@ int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRe
+@@ -2970,7 +3126,7 @@ int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRe
      int nz = sr->depth ? sr->depth : 1, ok = 1;
      for (int z = 0; z < nz && ok; z++) {
          unsigned layer = ds + (unsigned)(dr->zoffset + z);
