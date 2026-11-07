@@ -245,14 +245,14 @@ index 493345ff..493ae4a1 100644
  
  // The alpha test's state (dm/gfx/tools/dmsh_alpha.py, the _a entry points of the <key>_bx libraries): uint function (NVN_ALPHA_FUNC_*), float reference, at this fragment buffer index (nvn_mtl.m at_bind)
 diff --git a/dm/gfx/nvn/dmsh_chain.h b/dm/gfx/nvn/dmsh_chain.h
-index 61977287..5ca92228 100644
+index 61977287..558a02d4 100644
 --- a/dm/gfx/nvn/dmsh_chain.h
 +++ b/dm/gfx/nvn/dmsh_chain.h
 @@ -1,3 +1,3 @@
  // Generated file (dm/gfx/tools/dmsh_chain.py --header): the B shader library translation chain version this source tree expects (default options), one for every game;
  // the host loads only <library dir>/b-<V>/. Run dmsh_chain.py --header after changing the chain's tools and commit this file with the change
 -#define DMSH_CHAIN "223f10d34f97"
-+#define DMSH_CHAIN "1d619d0f520b"
++#define DMSH_CHAIN "3ee52af3ca18"
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
 index 2080367a..55c1e1f6 100644
 --- a/dm/gfx/nvn/hle_nvn.c
@@ -9569,7 +9569,7 @@ index a9aa8587..def61eca 100644
  
  if __name__ == '__main__':
 diff --git a/dm/gfx/tests/test_dmsh_meshstage.py b/dm/gfx/tests/test_dmsh_meshstage.py
-index 635d464d..c75af95c 100644
+index 635d464d..0a6f638c 100644
 --- a/dm/gfx/tests/test_dmsh_meshstage.py
 +++ b/dm/gfx/tests/test_dmsh_meshstage.py
 @@ -40,8 +40,8 @@ def sph(pos=0xf0, generics=b''):
@@ -9690,8 +9690,13 @@ index 635d464d..c75af95c 100644
  
      def test_past_metal_refused(self):
          with self.assertRaises(ValueError): self.mesh(vertices=300)
-@@ -146,7 +205,7 @@ class Stage(unittest.TestCase):
+@@ -144,9 +203,12 @@ class Stage(unittest.TestCase):
+         src = (KERNEL % (ms.memory(i)[1] // 4, ms.memory(i)[0][2] // 4 + 1)).replace('main0(', 'main0(uint (&a)[4], ')
+         with self.assertRaises(ValueError): ms.to_stage(src, i)
  
++    def test_position_is_invariant(self):   # two mesh shaders of one geometry must agree: a pre-pass and a colour pass testing depth for equality
++        self.assertIn('float4 position [[position, invariant]];', self.mesh()[0])
++
      @unittest.skipUnless(shutil.which('xcrun') and subprocess.run(['xcrun', '-sdk', 'macosx', '-f', 'metal'], capture_output=True).returncode == 0, 'no Metal compiler')
      def test_compiles(self):
 -        cases = [self.task()[0], self.mesh()[0], self.mesh(task=True)[0], self.mesh(primitive=True)[0]]
@@ -9699,7 +9704,7 @@ index 635d464d..c75af95c 100644
          with tempfile.TemporaryDirectory() as d:
              for n, src in enumerate(cases):
                  f = Path(d, f's{n}.metal'); f.write_text(src)
-@@ -182,7 +241,8 @@ fragment main0_out main0(main0_in in [[stage_in]])
+@@ -182,7 +244,8 @@ fragment main0_out main0(main0_in in [[stage_in]])
          import ast, re
          tools = Path(__file__).resolve().parents[1] / 'tools'
          tree = ast.parse((tools / 'dmsh_build.py').read_text())
@@ -11310,7 +11315,7 @@ index ae530b87..7e3fe773 100644
  
  
 diff --git a/dm/gfx/tools/dmsh_meshstage.py b/dm/gfx/tools/dmsh_meshstage.py
-index 0033535b..1776cea5 100644
+index 0033535b..daf9dba5 100644
 --- a/dm/gfx/tools/dmsh_meshstage.py
 +++ b/dm/gfx/tools/dmsh_meshstage.py
 @@ -8,9 +8,9 @@ Stage memory, in shared memory (memory()), all of it zero when the body starts:
@@ -11455,7 +11460,7 @@ index 0033535b..1776cea5 100644
      call = f'dm_stage_body({", ".join(names + [mem])});'
      # The thread's and the threadgroup's numbers: the kernel's parameters where it has them (an attribute may appear once in a function), else parameters of the wrapper's own
      own = {t[3]: t[2] + ('.x' if t[1] == 'uint3' else '') for t in map(_THREAD.match, params) if t}
-@@ -132,16 +163,34 @@ def to_stage(msl, i):
+@@ -132,16 +163,36 @@ def to_stage(msl, i):
              f'    if ({lid} == 0u) dm_grid.set_threadgroups_per_grid(uint3(min({mem}[{out + 1}], {METAL_MAX_GRID}u), 1u, 1u));\n}}\n')
      vertex, primitive = i['vertex'], i['primitive']
      max_v, max_p = i['max_v'], i['max_p']
@@ -11483,7 +11488,9 @@ index 0033535b..1776cea5 100644
 +    vw = {n: _width(c, read(n)) for n, c in vm.items() if isinstance(n, int)}
 +    pw = {n: _width(c, read(n)) for n, c in pm.items()}
 +    mw = {n: _width([None] * 4, read(n)) for n in miss}
-+    head += ('struct dm_vertex_t {\n    float4 position [[position]];\n' +
++    # The position is invariant, as a vertex shader's: a game may draw the same geometry with two mesh shaders and test the second for depth equality
++    # (Ocarina of Time draws its foliage with a mesh depth pre-pass and a mesh colour pass with depth EQUAL)
++    head += ('struct dm_vertex_t {\n    float4 position [[position, invariant]];\n' +
 +             ('    float point_size [[point_size]];\n' if 'psiz' in vm else '') +
 +             ''.join(f'    {_type(w)} a{n} [[user(locn{n})]];\n' for n, w in vw.items()) +
 +             ''.join(f'    {_type(w)} dm_pad{n} [[user(locn{n})]];\n' for n, w in mw.items()) + '};\n' +
@@ -11499,7 +11506,7 @@ index 0033535b..1776cea5 100644
      if None not in vm: raise ValueError('ms: its SPH enables no position component')
  
      def entry(name, gl):
-@@ -153,9 +202,9 @@ def to_stage(msl, i):
+@@ -153,9 +204,9 @@ def to_stage(msl, i):
                  f'    threadgroup_barrier(mem_flags::mem_threadgroup);\n    {call}\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n'
                  f'    uint np = min({mem}[{prim >> 2}] >> 24, {max_p}u);\n'
                  f'    if ({lid} == 0u) dm_out.set_primitive_count(np);\n'
