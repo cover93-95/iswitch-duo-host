@@ -1057,7 +1057,7 @@ index 1c960a32..a07c9500 100644
 +void mtl_present_screen(uint32_t w, uint32_t h);   // a screen taller than 16:9 (loader.c, DM_SCREEN_ASPECT): the picture's shape for a texture of that shape
  void mtl_present_wait(uint64_t ticket);   // as in nvn_obj.h: wait until that present has been handed to the GPU
 diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
-index 5d7f6180..7cb8e97b 100644
+index 5d7f6180..ff37cb00 100644
 --- a/dm/gfx/nvn/nvn_mtl.m
 +++ b/dm/gfx/nvn/nvn_mtl.m
 @@ -18,6 +18,7 @@
@@ -4669,7 +4669,7 @@ index 5d7f6180..7cb8e97b 100644
  }
 -static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int srgb) {
 -    NSUInteger key[5] = {iw, ih, ow, oh, (NSUInteger)srgb};
-+static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int color) {   // color: the variant's (UP_COLOR_LINEAR, _SRGB, _ROOT)
++static up_mfx_scaler *up_mfx_scaler_make(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int color) {   // color: the variant's (UP_COLOR_LINEAR, _SRGB, _ROOT)
 +    int srgb = color == UP_COLOR_SRGB;
 +    NSUInteger key[5] = {iw, ih, ow, oh, (NSUInteger)color};
      for (int i = 0; i < UP_MFX_SCALERS; i++) if (!memcmp(g_up_mfx[i].key, key, sizeof key)) return g_up_mfx[i].refused ? NULL : &g_up_mfx[i];
@@ -4681,7 +4681,7 @@ index 5d7f6180..7cb8e97b 100644
      NSError *err = nil; uint64_t t0 = now_ns();
      if (!g_fx_comp) g_fx_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&err];
      MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
-@@ -13004,7 +14455,7 @@ static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger
+@@ -13004,13 +14455,20 @@ static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger
          td.pixelFormat = of; td.width = ow; td.height = oh; td.usage = sc.outputTextureUsage | MTLTextureUsageShaderRead | (srgb ? MTLTextureUsagePixelFormatView : 0); out = [g_dev newTextureWithDescriptor:td];
          read = srgb ? [out newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm_sRGB] : out;
      }
@@ -4690,7 +4690,20 @@ index 5d7f6180..7cb8e97b 100644
           sc && in && read ? "" : ": MetalFX made none; the game's upscaler draws this size", (now_ns() - t0) / 1e6);
      if (!sc || !in || !read) return NULL;
      in.label = @"upscaler input"; out.label = @"upscaler output"; res_add(in); res_add(out); res_commit();
-@@ -13039,11 +14490,11 @@ static int up_mfx_encode(NvShader *cs) {
+     e->sc = sc; e->in = in; e->out = out; e->read = read; e->refused = 0;
+     return e;
+ }
++// One scaler per output size, made for an input as large as the output: dynamic resolution moves the input almost every frame (Ocarina of Time), and a scaler
++// per input size made a new MetalFX scaler and two textures on the submit thread at each change (4 kept), a stall each time. The input's size goes to the
++// scaler as its content rectangle (inputContentWidth / Height, set at each encode). A device that refuses that scaler gets one per input size, as before
++static up_mfx_scaler *up_mfx_scaler_for(NSUInteger iw, NSUInteger ih, NSUInteger ow, NSUInteger oh, int color) {
++    up_mfx_scaler *e = up_mfx_scaler_make(ow, oh, ow, oh, color);
++    return e ? e : up_mfx_scaler_make(iw, ih, ow, oh, color);
++}
+ // A rectangle of the push constants (origin, inclusive last texel relative to it) inside a w x h texture
+ static int up_mfx_rect(const uint32_t v[4], NSUInteger w, NSUInteger h, NVNcopyRegion *r) {
+     uint64_t rw = (uint64_t)v[2] + 1, rh = (uint64_t)v[3] + 1;
+@@ -13039,20 +14497,21 @@ static int up_mfx_encode(NvShader *cs) {
      if (!in || !out || in == out || in.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D || in.sampleCount != 1 || out.sampleCount != 1 ||
          fmt_int_or_ds(in.pixelFormat) || fmt_int_or_ds(out.pixelFormat) || mtl_fmt_block(out.pixelFormat) || !up_mfx_rect(v, in.width, in.height, &ir) || !up_mfx_rect(v + 4, out.width, out.height, &orr) ||
          orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) { g_up_mfx_kept++; return 0; }
@@ -4703,9 +4716,12 @@ index 5d7f6180..7cb8e97b 100644
 -    int direct = !srgb && (NSUInteger)ir.width == in.width && (NSUInteger)ir.height == in.height && out.storageMode == MTLStorageModePrivate &&
 +    int direct = !srgb && !root && (NSUInteger)ir.width == in.width && (NSUInteger)ir.height == in.height && out.storageMode == MTLStorageModePrivate &&
                   in.pixelFormat == MTLPixelFormatRGBA16Float && out.pixelFormat == MTLPixelFormatRGBA16Float && !ir.xoffset && !ir.yoffset && !orr.xoffset && !orr.yoffset && (NSUInteger)orr.width == out.width &&
-                  (NSUInteger)orr.height == out.height && (in.usage & sc.colorTextureUsage) == sc.colorTextureUsage && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage;
+-                 (NSUInteger)orr.height == out.height && (in.usage & sc.colorTextureUsage) == sc.colorTextureUsage && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage;
++                 (NSUInteger)orr.height == out.height && (in.usage & sc.colorTextureUsage) == sc.colorTextureUsage && (out.usage & sc.outputTextureUsage) == sc.outputTextureUsage &&
++                 in.width == sc.inputWidth && in.height == sc.inputHeight;   // the game's texture is the scaler's input only at the size it was made for
      if (!direct && !(out.usage & MTLTextureUsageRenderTarget)) { g_up_mfx_kept++; return 0; }
-@@ -13052,7 +14503,7 @@ static int up_mfx_encode(NvShader *cs) {
+     zskip_del(dout.serial);
+     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
      ubd_land_compute();
      NVNcopyRegion at0 = {0, 0, 0, ir.width, ir.height, 1}, at0o = {0, 0, 0, orr.width, orr.height, 1};
      id<MTLTexture> color = direct ? in : e->in, result = direct ? out : e->out;
@@ -4714,7 +4730,7 @@ index 5d7f6180..7cb8e97b 100644
      id<MTL4ComputeCommandEncoder> ce = [g_cb computeCommandEncoder];   // as dlss_eval: MetalFX opens encoders of its own, which take no barrier
      [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:resource_vis()];
      [ce barrierAfterStages:MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
-@@ -13069,7 +14520,7 @@ static int up_mfx_encode(NvShader *cs) {
+@@ -13069,7 +14528,7 @@ static int up_mfx_encode(NvShader *cs) {
      args_dirty_all();
      if (!g_up_mfx_n++) MLOG("upscaler: first dispatch of %s drawn by MetalFX, %dx%d at %d,%d of %lux%lu (format %lu) → %dx%d at %d,%d of %lux%lu (format %lu)%s", cs->key, ir.width, ir.height, ir.xoffset, ir.yoffset,
                              (unsigned long)in.width, (unsigned long)in.height, (unsigned long)in.pixelFormat, orr.width, orr.height, orr.xoffset, orr.yoffset, (unsigned long)out.width, (unsigned long)out.height,
@@ -4723,7 +4739,7 @@ index 5d7f6180..7cb8e97b 100644
      return 1;
  }
  // The present pass: src's valid rectangle drawn into dst (the drawable, or a screenshot's texture) as present_encode draws it, through MetalFX first where fx_encode takes it
-@@ -13078,7 +14529,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
+@@ -13078,7 +14537,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
      NSUInteger r[4]; if (!present_crop_rect(src, crop, r)) return 0;
      present_pipeline(dst.pixelFormat);
      double dw = dst.width, dh = dst.height;
@@ -4732,7 +4748,7 @@ index 5d7f6180..7cb8e97b 100644
      int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
      id<MTLTexture> tex = present_raw_src(src), up = fx ? fx_encode(fx, cb, tex, r, vp, dst.pixelFormat, fx == &g_fx_present) : nil;
      if (up) { tex = up; r[0] = r[1] = 0; r[2] = up.width; r[3] = up.height; }   // the scaled picture, the viewport's size: drawn 1:1
-@@ -13120,7 +14571,7 @@ static int present_offscreen_m4(id<MTLTexture> src, const int crop[4], id<MTLTex
+@@ -13120,7 +14579,7 @@ static int present_offscreen_m4(id<MTLTexture> src, const int crop[4], id<MTLTex
      [options addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
          (void)al; (void)cb; (void)raw; (void)fx.sc;   // keep the Metal 4 commands, source view and scaler alive too
          res_remove(out); res_remove(uvb); res_remove(fx.in); res_remove(fx.out);
@@ -4741,7 +4757,7 @@ index 5d7f6180..7cb8e97b 100644
          done(f.error ? PRESENT_FAILED : kind);
      }];
      [g_q4 commit:&cb count:1 options:options];
-@@ -13161,9 +14612,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -13161,9 +14620,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }
      // The picture's shape for the front end's layout (front.h front_picture_shape): reported when its width / height changes by more than 0.1 %, not on a size change of the same
      // shape (1280x720 handheld, 1920x1080 docked)
@@ -4753,7 +4769,7 @@ index 5d7f6180..7cb8e97b 100644
      // A texture made on first resolution joins the residency set (res_add), which a submission commits; a window texture presented before any submission has used it was still
      // outside the committed set when the display command buffer sampled it. Super Smash Bros. Ultimate presents its window texture in its first frames before drawing into it:
      // the display queue page-faulted (kIOGPUCommandBufferCallbackErrorPageFault) and macOS then ignored every later command buffer of the process, so the window stayed pink
-@@ -13202,6 +14652,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -13202,6 +14660,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      for (int i = 0; i < g_nshotq;) if (g_present_n >= g_shotq[i].frame) { mtl_finish_gpu(); shot(src, g_shotq[i].path, 1, crop); g_shotq[i] = g_shotq[--g_nshotq]; } else i++;
      pthread_mutex_unlock(&g_shotq_mu);
  
@@ -4761,7 +4777,7 @@ index 5d7f6180..7cb8e97b 100644
      CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
      if (!layer) return 0;
      if (g_present_layer_resident != layer) { [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
-@@ -13230,7 +14681,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -13230,7 +14689,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      [cb endCommandBuffer];
      MTL4CommitOptions *o = [MTL4CommitOptions new];
      [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
@@ -4770,7 +4786,7 @@ index 5d7f6180..7cb8e97b 100644
          pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv);
          present_gpu_note(f.GPUEndTime - f.GPUStartTime, fx_kind); pthread_mutex_unlock(&g_pq_mu);
      }];
-@@ -13392,6 +14843,11 @@ __attribute__((weak)) int front_screen_variable_refresh(void) { return 0; }   //
+@@ -13392,6 +14851,11 @@ __attribute__((weak)) int front_screen_variable_refresh(void) { return 0; }   //
  // CAMetalDisplayLink accepts only 1 or 2. Compare its readback with the supported request, or an oversized override rewrites and logs every frame.
  static int link_latency(void) { return g_present_latency > 0 ? MIN(g_present_latency, 2) : front_fullscreen() && front_screen_variable_refresh() ? 2 : 1; }
  static const char *link_latency_why(void) { return g_present_latency > 0 ? "DM_PRESENT_LATENCY" : !front_fullscreen() ? "window" : front_screen_variable_refresh() ? "fullscreen, variable refresh" : "fullscreen, fixed refresh"; }
@@ -4782,7 +4798,7 @@ index 5d7f6180..7cb8e97b 100644
  static int g_link_mode = 1;   // Current mode of the display link object: 1 / 2 same as g_dm_present_link, 3 = power-saving mode 30 Hz
  static void *link_main(void *arg) {   // Display link thread: started when switching to display-link mode, exits when switching back to 0
      (void)arg;
-@@ -13421,7 +14877,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
+@@ -13421,7 +14885,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
      }
      if (g_rescue_mode) want = 0;
      pthread_mutex_unlock(&g_pq_mu);
@@ -4791,7 +4807,7 @@ index 5d7f6180..7cb8e97b 100644
      if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : 60);
      // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
      // while its thread starts (after link_main read the rate) is not lost
-@@ -13647,6 +15103,8 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
+@@ -13647,6 +15111,8 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
      pthread_mutex_unlock(&g_pq_mu);
      return ss ? 0 : tk;   // a snapshot: the game's texture is free now (its later draws come after the copy on the queue)
  }
@@ -4800,7 +4816,7 @@ index 5d7f6180..7cb8e97b 100644
  // Do not wait during discard: the frame enqueued only after the flag was set (the present thread had just passed the flag check) has nobody to take it, and waiting for it would stall again; it is left for the following mtl_drain to clear
  // Do not wait indefinitely in display-link mode: see the note at STALL_NS. Only frames "not yet taken by the display link" are dropped; the one already on its way to the screen is waited for until handed to the GPU (same dropping as when entering the background)
  void mtl_present_wait(uint64_t tk) {
-@@ -13755,5 +15213,81 @@ void mtl_wait_state_dump(void) {
+@@ -13755,5 +15221,81 @@ void mtl_wait_state_dump(void) {
           (unsigned long long)g_pq_in, (unsigned long long)g_pq_done, g_cb != nil, atomic_load(&g_sub_thread_set));
  }
  void mtl_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_alloc_waits; *grown = g_alloc_grown; *n = g_alloc_n; }   // Main submit allocator pool: how many times it waited, how many times it grew, how many exist now
