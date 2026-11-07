@@ -23,7 +23,7 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
   EXPECTED_XCODE: Xcode 27.2
   NX2APPLE_COMMIT: 5c0db6cde8bd648f313d404dac45ac55d8c2a62f
-  EXPECTED_CHAIN: adec7d81d970
+  EXPECTED_CHAIN: 1681473c4e47
 
 defaults:
   run:
@@ -67,7 +67,7 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install fonttools==4.68.0
           python3 tools/engine.py sync
-          # Moteur fusionne (nxnative #1299 + #1312), sources publiques uniquement.
+          # Moteur oot3 : nxnative main b2d46b86 + PR 1576, 1497, 1584, 1488, 1453, 1368, 1522, 1379 + patchs NX2Apple ; sources publiques uniquement.
           git -C engine apply "$GITHUB_WORKSPACE/oot/engine-oot.diff"
           grep -q "\"$EXPECTED_CHAIN\"" engine/dm/gfx/nvn/dmsh_chain.h
 
@@ -104,7 +104,7 @@ jobs:
 
           DM_BUNDLE_ID: local.iswitchduo.botw
           DM_SHELL_NAME: NX2 Switch 2
-          DM_APP_VERSION: 1.2.2
+          DM_APP_VERSION: 1.3.0
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
