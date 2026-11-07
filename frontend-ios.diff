@@ -1,5 +1,5 @@
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index e179f3c..1e6fad1 100644
+index e179f3c..5bf50ca 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -48,23 +48,25 @@ struct CoverFlowView: View, Equatable {
@@ -53,7 +53,49 @@ index e179f3c..1e6fad1 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -205,9 +211,7 @@ struct CoverFlowView: View, Equatable {
+@@ -138,6 +144,7 @@ struct CoverFlowView: View, Equatable {
+                     // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
+                     coverButton(detail, cover: cover)
+                         .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
++                        .allowsHitTesting(false)   // taps are placed by where they land (below), not by the turned boxes' own areas
+                         .id(detail.id)
+                 }
+             }.scrollTargetLayout()
+@@ -172,6 +179,33 @@ struct CoverFlowView: View, Equatable {
+         }
+         .scrollIndicators(.hidden)
+         .scrollClipDisabled()
++        // The whole carousel takes taps, also beside the first and the last box where no card lies under the finger.
++        .contentShape(Rectangle())
++        // A tap is read from where it lands on the carousel: on the middle box it plays, beside it it brings the neighbour
++        // on that side to the middle. The boxes' own hit areas do not follow their 3D turn and their tuck behind the middle
++        // box, so with upright boxes a neighbour's area covered most of the middle one. The box in the middle is read from
++        // the scroll offset itself, not from the selection, which can lag at the two ends. A simultaneous gesture leaves the
++        // scroll to the scroll view.
++        .simultaneousGesture(SpatialTapGesture().onEnded { tap in
++            guard !userScrolling else { return }
++            if longPressed { longPressed = false; return }
++            let centred = min(games.count - 1, max(0, Int((scrolled / stride).rounded())))
++            let dx = tap.location.x - width / 2
++            if abs(dx) <= cover / 2 {
++                if games[centred].id != selected.id { select(games[centred].id) }
++                primary(games[centred])
++                return
++            }
++            let index = min(games.count - 1, max(0, centred + (dx < 0 ? -1 : 1)))
++            guard index != centred else { return }
++            withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = games[index].id }
++            select(games[index].id)
++        })
++        .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
++            guard settled else { return }
++            longPressed = true
++            openSettings()
++        })
+     }
+ 
+     /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
+@@ -205,9 +239,7 @@ struct CoverFlowView: View, Equatable {
              withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = detail.id }
              select(detail.id)
          } label: {
@@ -64,7 +106,7 @@ index e179f3c..1e6fad1 100644
          }
          .buttonStyle(.plain)
          // A long press on the centred card opens its settings, a shortcut for the button at the top.
-@@ -247,6 +251,7 @@ struct CoverFlowView: View, Equatable {
+@@ -247,6 +279,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -72,7 +114,7 @@ index e179f3c..1e6fad1 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -255,6 +260,20 @@ struct CoverFlowView: View, Equatable {
+@@ -255,6 +288,20 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -93,7 +135,7 @@ index e179f3c..1e6fad1 100644
      private var hints: some View {
          HStack(spacing: 24) {
              GlyphHint(role: .activate, label: selected.game.state.actionTitle)
-@@ -266,6 +285,58 @@ struct CoverFlowView: View, Equatable {
+@@ -266,6 +313,58 @@ struct CoverFlowView: View, Equatable {
      }
  }
  
