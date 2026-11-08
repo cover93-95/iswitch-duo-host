@@ -1,5 +1,5 @@
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index e179f3c..5bf50ca 100644
+index e179f3c..c8762b5 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -48,23 +48,25 @@ struct CoverFlowView: View, Equatable {
@@ -135,7 +135,7 @@ index e179f3c..5bf50ca 100644
      private var hints: some View {
          HStack(spacing: 24) {
              GlyphHint(role: .activate, label: selected.game.state.actionTitle)
-@@ -266,6 +313,58 @@ struct CoverFlowView: View, Equatable {
+@@ -266,6 +313,64 @@ struct CoverFlowView: View, Equatable {
      }
  }
  
@@ -159,8 +159,14 @@ index e179f3c..5bf50ca 100644
 +            )
 +            .overlay(shape.strokeBorder(.white.opacity(chosen ? 0.6 : 0.12), lineWidth: chosen ? 2 : 1))
 +            .overlay(alignment: .topLeading) {
-+                let size = max(8, min(14, width * 0.05))
-+                StateDot(state: game.state, size: size).padding(size * 0.9)
++                // A ready game shows no dot: it would sit on the box's console logo. The dot stays as a warning
++                // when the game needs its data, an app update, or cannot run.
++                if case .playable = game.state {
++                    EmptyView()
++                } else {
++                    let size = max(8, min(14, width * 0.05))
++                    StateDot(state: game.state, size: size).padding(size * 0.9)
++                }
 +            }
 +            .shadow(color: chosen ? glow.opacity(0.6) : .black.opacity(0.5), radius: chosen ? width * 0.10 : width * 0.05,
 +                    y: chosen ? 0 : width * 0.03)
