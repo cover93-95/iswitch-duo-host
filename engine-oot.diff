@@ -268,16 +268,16 @@ index 493345ff..65ecf6ca 100644
  
  // The alpha test's state (dm/gfx/tools/dmsh_alpha.py, the _a entry points of the <key>_bx libraries): uint function (NVN_ALPHA_FUNC_*), float reference, at this fragment buffer index (nvn_mtl.m at_bind)
 diff --git a/dm/gfx/nvn/dmsh_chain.h b/dm/gfx/nvn/dmsh_chain.h
-index 61977287..3c8e35cf 100644
+index 61977287..c5c629fe 100644
 --- a/dm/gfx/nvn/dmsh_chain.h
 +++ b/dm/gfx/nvn/dmsh_chain.h
 @@ -1,3 +1,3 @@
  // Generated file (dm/gfx/tools/dmsh_chain.py --header): the B shader library translation chain version this source tree expects (default options), one for every game;
  // the host loads only <library dir>/b-<V>/. Run dmsh_chain.py --header after changing the chain's tools and commit this file with the change
 -#define DMSH_CHAIN "223f10d34f97"
-+#define DMSH_CHAIN "89f44f9b6bb0"
++#define DMSH_CHAIN "b9304ae068e8"
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
-index 2080367a..f876ba90 100644
+index 2080367a..9671341e 100644
 --- a/dm/gfx/nvn/hle_nvn.c
 +++ b/dm/gfx/nvn/hle_nvn.c
 @@ -122,6 +122,7 @@ HLE_FORCE("nvnBootstrapLoader", "the NVN graphics API is replaced wholesale with
@@ -506,18 +506,48 @@ index 2080367a..f876ba90 100644
  // CPU texture read (NVN ReadTexels): for packaged textures the pool memory is the ground truth (de-layout and read directly); GPU-written textures are read back from the MTLTexture (nvn_mtl.m)
  static void read_texels(const tex_t *o, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, ptrdiff_t row, ptrdiff_t img) {
      int bw, bh, bpb = nvn_fmt_bpb(o->d.format, &bw, &bh);
-@@ -639,8 +726,8 @@ NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
+@@ -637,28 +724,25 @@ NVN(nvnSamplerFinalize, void, NVNsampler *s) { ((samp_t *)s)->magic = 0; }
+ NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
+     (void)d; memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G'); return 1;
  }
- static void pk_drop(const void *p);
+-static void pk_drop(const void *p);
  NVN(nvnProgramFinalize, void, NVNprogram *p) {
 -    pthread_mutex_lock(&g_sub_mu); mtl_prog_forget((const prog_t *)p); pthread_mutex_unlock(&g_sub_mu);
 -    mtl_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; pk_drop(p);
+-}
+-// a program's per-stage keys (side table: guest NVNprogram address → host object; bit i of ok = stage i computed)
 +    pthread_mutex_lock(&g_sub_mu); mtl_prog_forget((const prog_t *)p); mtl_prog_release((prog_t *)p); pthread_mutex_unlock(&g_sub_mu);
-+    ((prog_t *)p)->magic = 0; pk_drop(p);
- }
- // a program's per-stage keys (side table: guest NVNprogram address → host object; bit i of ok = stage i computed)
++    ((prog_t *)p)->magic = 0;
++}
++// A program's per-stage keys, one record per SetShaders, found by prog_t.serial (bit i of ok = stage i computed). A game may copy an NVNprogram after SetShaders and draw with
++// the copy, as on the console the struct holds the whole program: Unity does (Ori and the Will of the Wisps: 135 single-stage programs a boot). The copy carries the serial
++// but not the address; looked up by address, a copy had no record, so its stages were keyed at the first draw from the control section, which the game had freed by then:
++// random keys, "not in the shader map", draws skipped and a picture of noise. A record stays as long as the process (64 bytes and a table entry a SetShaders): a copy can
++// outlive the program it was made from, and the host cannot see when the last copy goes. The Metal side finds a program's translation by its serial too (prog_get)
  typedef struct { uint8_t key[6][8]; uint8_t ok; } prog_keys_t;
-@@ -674,11 +761,11 @@ void nvn_ctl_lens(const void *control, uint32_t *nctl, uint32_t *ncode) {
+-static pthread_mutex_t g_pk_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableDictionaryRef g_pk;   // a dedicated table (keys not shared with other side tables)
+-static prog_keys_t *pk_get(const void *p, int make) {
++static pthread_mutex_t g_pk_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableDictionaryRef g_pk;   // serial → record
++static prog_keys_t *pk_get(uint64_t serial) {
+     pthread_mutex_lock(&g_pk_mu);
+     if (!g_pk) g_pk = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+-    prog_keys_t *k = (prog_keys_t *)CFDictionaryGetValue(g_pk, p);
+-    if (!k && make) { k = calloc(1, sizeof *k); CFDictionarySetValue(g_pk, p, k); }
++    prog_keys_t *k = (prog_keys_t *)CFDictionaryGetValue(g_pk, (const void *)(uintptr_t)serial);
++    if (!k) { k = calloc(1, sizeof *k); CFDictionarySetValue(g_pk, (const void *)(uintptr_t)serial, k); }
+     pthread_mutex_unlock(&g_pk_mu);
+     return k;
+ }
+-static void pk_drop(const void *p) {
+-    pthread_mutex_lock(&g_pk_mu);
+-    prog_keys_t *k = g_pk ? (prog_keys_t *)CFDictionaryGetValue(g_pk, p) : NULL;
+-    if (k) { CFDictionaryRemoveValue(g_pk, p); free(k); }
+-    pthread_mutex_unlock(&g_pk_mu);
+-}
+ // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
+ // The control section's bytes in the key and the code area's length. NVN: +0x704 is the code area's length; +0x20 holds the section's own length: sections of at least
+ // 0x880 bytes (all of Mario's, Engage's, Dread's and 13 Sentinels') use the first 0x880; SDK 10's 3D World has 0x850-byte ones followed by other data, so only their own
+@@ -674,11 +758,11 @@ void nvn_ctl_lens(const void *control, uint32_t *nctl, uint32_t *ncode) {
      *nctl = own >= 0x760 && own < 0x880 ? own : 0x880;
  }
  static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
@@ -531,7 +561,17 @@ index 2080367a..f876ba90 100644
      uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
      // Profile key shader_key_skip: bytes of the control section hashed as zeros (shader_split.py key_ctl). Batman: Arkham Knight's engine shares one control section among shaders whose
      // sections differ only in GLSLC's compile information (+0x778..+0x791, +0x7d0..+0x7e7): it hands a program the section of an earlier shader with the same rest, so the bytes there name another shader
-@@ -704,7 +791,8 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
+@@ -696,7 +780,8 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
+ }
+ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
+     if (st >= p->nstage) return 0;
+-    prog_keys_t *k = pk_get(p, 1);
++    if (!p->serial) return keys_hash(&p->sd[st], 0, key), 1;   // not set by SetShaders (the game wrote the struct itself): no record to keep the key in
++    prog_keys_t *k = pk_get(p->serial);
+     if (!(k->ok >> st & 1)) { keys_hash(&p->sd[st], 0, k->key[st]); k->ok |= (uint8_t)(1u << st); }
+     memcpy(key, k->key[st], 8);
+     return 1;
+@@ -704,15 +789,22 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
  NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
      prog_t *o = (prog_t *)p;
      if (n < 0 || n > 6) { LOG("[RED] ProgramSetShaders stage count %d", n); return 0; }
@@ -541,7 +581,32 @@ index 2080367a..f876ba90 100644
      // The keys are computed here (see prog_key in nvn_obj.h): the control section is only guaranteed valid during this call; the code area lives in a memory pool and stays valid while the program is in use
      static int dump = -1; if (dump < 0) dump = getenv("DM_NVN_SHDUMP") != NULL;
      static const char *trace; static int trace_init;
-@@ -731,13 +819,13 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData
+     if (!trace_init) { trace = getenv("DM_NVN_PROGTRACE"); trace_init = 1; }
+-    prog_keys_t *k = pk_get(p, 1);
+-    k->ok = 0;
++    prog_keys_t *k = pk_get(o->serial);   // a new serial: a new record
+     for (int i = 0; i < n; i++) {
+         if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
++        // A stage keyed later (its code area is in no memory pool yet) is keyed from the host's copy of its control section's key bytes, as NVN lets the game free its own
++        // once this call returns; DM_NVN_SHDUMP keeps a copy of every stage, for the replay layer to save shaders missing from the map (it writes the same bytes). The program
++        // and its copies point at it, so it stays as long as the process, as the record does. nvn_ctl_lens reads it again: NVN's key bytes hold +0x20 and +0x704, NVN2's +0x44
++        if (sd[i].control && (dump || !(k->ok >> i & 1))) {
++            uint32_t nctl, ncode; nvn_ctl_lens(sd[i].control, &nctl, &ncode);
++            void *c = malloc(nctl); memcpy(c, sd[i].control, nctl); o->sd[i].control = c;
++        }
+         // Diagnostic: trace the loader of selected shader keys (comma-separated hex).
+         if (trace && (k->ok & (1u << i))) {
+             char key[17]; for (int j = 0; j < 8; j++) snprintf(key + j * 2, 3, "%02x", k->key[i][j]);
+@@ -721,8 +813,6 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData
+                 dm_backtrace((uint64_t)__builtin_frame_address(0));
+             }
+         }
+-        // DM_NVN_SHDUMP (debugging): keep a copy of the control section so the replay layer can save shaders missing from the map (never freed)
+-        if (dump && sd[i].control) { void *c = malloc(0x880); memcpy(c, sd[i].control, 0x880); o->sd[i].control = c; }
+     }
+     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
+     mtl_prog_prefetch(o);   // its libraries load in the background now, not at its first draw
+@@ -731,13 +821,13 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData
  
  // ---------- Sync / events ----------
  NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0}; return 1; }
@@ -559,7 +624,7 @@ index 2080367a..f876ba90 100644
  // ZCull data: the host does no ZCull, so there is nothing to save / restore
  NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
  NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
-@@ -748,6 +836,7 @@ static _Atomic uint64_t g_sync_ns;
+@@ -748,6 +838,7 @@ static _Atomic uint64_t g_sync_ns;
  NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
      const sync_t *o = (const sync_t *)s;
      if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
@@ -567,7 +632,7 @@ index 2080367a..f876ba90 100644
      int (*w)(uint64_t, uint64_t) = o->fenced == 2 ? mtl_wait_acq : mtl_wait;
      if (w(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
      uint64_t t0 = now_ns(); int ok = w(o->fence, timeout); atomic_fetch_add(&g_sync_ns, now_ns() - t0);   // the frame's blocked SyncWait time (@sync_ms)
-@@ -758,11 +847,14 @@ NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p,
+@@ -758,11 +849,14 @@ NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p,
  NVN(nvnEventInitialize, NVNboolean, NVNevent *e, const NVNeventBuilder *b) {
      const ev_builder_t *s = (const ev_builder_t *)b;
      if (!s->pool || !s->pool->mem) { LOG("[RED] EventInitialize has no storage"); return 0; }
@@ -585,7 +650,7 @@ index 2080367a..f876ba90 100644
  NVN(nvnEventSignal, void, NVNevent *e, NVNeventSignalMode m, uint32_t v) { ev_signal((const ev_t *)e, m, v); }
  
  // ---------- Queue ----------
-@@ -793,13 +885,14 @@ NVN(nvnQueueInitialize, NVNboolean, NVNqueue *q, const NVNqueueBuilder *b) {
+@@ -793,13 +887,14 @@ NVN(nvnQueueInitialize, NVNboolean, NVNqueue *q, const NVNqueueBuilder *b) {
      OLOG("QueueInitialize %p", (void *)q); return 1;
  }
  NVN(nvnQueueFinalize, void, NVNqueue *q) {
@@ -601,7 +666,7 @@ index 2080367a..f876ba90 100644
  
  // ---------- Command buffer: record into the game's command memory, perform CPU-visible side effects at submit ----------
  #define CB(c) ((cmd_t *)(c))
-@@ -948,6 +1041,13 @@ NVN(nvnCommandBufferIsRecording, NVNboolean, const NVNcommandBuffer *c) { return
+@@ -948,6 +1043,13 @@ NVN(nvnCommandBufferIsRecording, NVNboolean, const NVNcommandBuffer *c) { return
  NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
      for (int i = 0; i < n; i++) { uint8_t *p = cmd_alloc(CB(c), 16); put_hdr(p, OP_CALL, 16); memcpy(p + 8, &h[i], 8); }
  }
@@ -615,7 +680,7 @@ index 2080367a..f876ba90 100644
  NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventSignalMode m, NVNeventSignalLocation loc, int flags, uint32_t v) {
      (void)loc; (void)flags;
      uint8_t *p = cmd_alloc(CB(c), 24); put_hdr(p, OP_SIGNAL_EVENT, 24);
-@@ -1020,8 +1120,8 @@ NVN(nvnCommandBufferSetRenderTargets, void, NVNcommandBuffer *c, int n, const NV
+@@ -1020,8 +1122,8 @@ NVN(nvnCommandBufferSetRenderTargets, void, NVNcommandBuffer *c, int n, const NV
      p_set_rt *r = REC_SNAP(c, OP_SET_RT, p_set_rt, n + 1); r->n = n;
      for (int i = 0; i < n; i++) { r->color[i] = ct ? tex_snap(r, SNAP_OFF(p_set_rt), i, ct[i], (uint64_t)__builtin_return_address(0)) : NULL; copy_view(&r->cview[i], &r->has_cview[i], cv ? cv[i] : NULL); }
      r->depth = tex_snap(r, SNAP_OFF(p_set_rt), n, dt, (uint64_t)__builtin_return_address(0)); copy_view(&r->dview, &r->has_dview, dv);
@@ -626,7 +691,7 @@ index 2080367a..f876ba90 100644
  }
  NVN(nvnCommandBufferClearColor, void, NVNcommandBuffer *c, int index, const float *rgba, int mask) {
      p_clear_color *r = REC(c, OP_CLEAR_COLOR, p_clear_color); r->index = index; r->mask = mask; memcpy(r->rgba, rgba, 16);
-@@ -1135,6 +1235,8 @@ NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr,
+@@ -1135,6 +1237,8 @@ NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr,
  // issues a Metal indirect draw from the pool buffer instead of reading it at record or replay time (nvn_mtl.m draw)
  // NVN2 mesh shading: count task workgroups from first, or mesh workgroups in a program with no task shader (nvn_geometry.inc mesh_tasks_draw)
  NVN_NOPROTO(nvnCommandBufferDrawMeshTasks, void, NVNcommandBuffer *c, int first, int count) { rec_draw(c, (p_draw){DM_PRIM_MESH_TASKS, first, count, 1, 0, 0}); }
@@ -635,7 +700,7 @@ index 2080367a..f876ba90 100644
  // Variable rate shading: the image, its palettes and their mode ask the hardware to shade some tiles at a coarser rate. Metal's render passes have no per-tile rate (a rasterization rate
  // map resamples the whole target), and shading every pixel is the most a rate can ask, so these change no result but its sharpness: nothing is recorded
  NVN_NOPROTO(nvnCommandBufferBindShadingRateImage, void, NVNcommandBuffer *c, const void *view, const void *tex) { (void)c; (void)view; (void)tex; }
-@@ -1157,27 +1259,34 @@ NVN(nvnCommandBufferBarrier, void, NVNcommandBuffer *c, int bits) { *(int32_t *)
+@@ -1157,27 +1261,34 @@ NVN(nvnCommandBufferBarrier, void, NVNcommandBuffer *c, int bits) { *(int32_t *)
  NVN(nvnCommandBufferSetTexturePool, void, NVNcommandBuffer *c, const NVNtexturePool *p) { REC(c, OP_SET_TEX_POOL, p_set_pool)->pool = (const dpool_t *)p; CB(c)->tex_base = dpool_base(g_tpb, g_ntpb, p); }
  NVN(nvnCommandBufferSetSamplerPool, void, NVNcommandBuffer *c, const NVNsamplerPool *p) { REC(c, OP_SET_SAMP_POOL, p_set_pool)->pool = (const dpool_t *)p; CB(c)->samp_base = dpool_base(g_spb, g_nspb, p); }
  
@@ -676,7 +741,7 @@ index 2080367a..f876ba90 100644
  }
  // A textured rectangle into the bound colour targets, replayed as draw_tex (nvn_mtl.m). The handle's IDs are moved to the pools this command buffer bound, as bind_handles does:
  // Streets of Rage 4 draws its movie frames into its scene target this way, from a second texture pool. Only the handle's lower 32 bits reach the GPU (bind_handles)
-@@ -1187,8 +1296,11 @@ NVN(nvnCommandBufferDrawTexture, void, NVNcommandBuffer *c, NVNtextureHandle h,
+@@ -1187,8 +1298,11 @@ NVN(nvnCommandBufferDrawTexture, void, NVNcommandBuffer *c, NVNtextureHandle h,
      if (sid) sid += (uint64_t)CB(c)->samp_base;
      *REC(c, OP_DRAW_TEX, p_draw_tex) = (p_draw_tex){tid | sid << 20, *d, *s};
  }
@@ -690,7 +755,7 @@ index 2080367a..f876ba90 100644
  NVN(nvnCommandBufferSetBlendColor, void, NVNcommandBuffer *c, const float *v) { memcpy(REC(c, OP_BLEND_COLOR, p_blend_color)->rgba, v, 16); }
  
  // ---------- State objects: packed in place (nvn_obj.h) ----------
-@@ -1204,6 +1316,7 @@ NVN(nvnBlendStateSetBlendEquation, void, NVNblendState *s, NVNblendEquation er,
+@@ -1204,6 +1318,7 @@ NVN(nvnBlendStateSetBlendEquation, void, NVNblendState *s, NVNblendEquation er,
  // on every blend state) is the default; Mario vs. Donkey Kong 1.0.1 sets SRC_OVER (8) on one state in its levels
  NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode mode) { ST(blend_st, s)->adv = (unsigned)mode <= NVN_BLEND_ADVANCED_MODE_HSL_LUMINOSITY ? mode : 0; }
  NVN(nvnBlendStateSetAdvancedPremultipliedSrc, void, NVNblendState *s, uint32_t pm) { ST(blend_st, s)->adv_npm = !B(pm); }
@@ -698,7 +763,7 @@ index 2080367a..f876ba90 100644
  NVN(nvnBlendStateSetAdvancedOverlap, void, NVNblendState *s, NVNblendAdvancedOverlap o) { ST(blend_st, s)->adv_ovl = (unsigned)o & 3; }
  NVN(nvnColorStateSetDefaults, void, NVNcolorState *s) { *ST(color_st, s) = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; }
  NVN(nvnColorStateSetBlendEnable, void, NVNcolorState *s, int i, uint32_t en) {
-@@ -1298,33 +1411,14 @@ void dm_gfx_suspend(int on) {
+@@ -1298,33 +1413,14 @@ void dm_gfx_suspend(int on) {
  }
  // One submission at a time: the Metal replay keeps one command buffer and one upload batch for the submission in progress (nvn_mtl.m g_cb). Fire Emblem: Three Houses initializes two queues and
  // submits on both from two threads; the second submission arrived while the first was replaying and the host stopped with "submit re-entered" at the ninth frame. NVN orders work on different queues only
@@ -735,7 +800,7 @@ index 2080367a..f876ba90 100644
  }
  
  // Commands that only affect GPU state / only execute on the GPU: the null device only counts them (the thunk has already counted)
-@@ -1332,7 +1426,6 @@ static void nvn_nop(void) {}
+@@ -1332,7 +1428,6 @@ static void nvn_nop(void) {}
  static const char *const g_nops[] = {
      "nvnCommandBufferSetPatchSize",
      "nvnCommandBufferSetDepthBounds",
@@ -743,7 +808,7 @@ index 2080367a..f876ba90 100644
      "nvnCommandBufferSetShaderScratchMemory",
      "nvnCommandBufferPushDebugGroupDynamic",
      "nvnCommandBufferPopDebugGroup",
-@@ -1342,8 +1435,6 @@ static const char *const g_nops[] = {
+@@ -1342,8 +1437,6 @@ static const char *const g_nops[] = {
      "nvnCommandBufferPushDebugGroupStatic",
      "nvnCommandBufferPopDebugGroupId",
      "nvnCommandBufferInsertDebugMarkerStatic",
@@ -752,7 +817,7 @@ index 2080367a..f876ba90 100644
  };
  __attribute__((constructor)) static void nvn_nops_register(void) {
      // Empty implementations overwrite the unimplemented stubs after the slot table is initialized; a misspelled name (not in main's name table) reports a failure and aborts at startup
-@@ -1424,7 +1515,7 @@ __attribute__((weak)) void dm_thread_cpu(char *out, size_t n, double secs) { (vo
+@@ -1424,7 +1517,7 @@ __attribute__((weak)) void dm_thread_cpu(char *out, size_t n, double secs) { (vo
  void mtl_res_stats(char *out, size_t n);
  void mtl_barrier_stats(uint64_t *skip, uint64_t *full);
  extern uint32_t mtl_present_qos(void);
@@ -761,7 +826,7 @@ index 2080367a..f876ba90 100644
  static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
  static uint64_t g_fs_start, g_fs_wait;   // frame step (fstep_tick): when the first acquire after a present returned (the frame's start, 0 = none yet), and its pacing wait
  uint64_t dm_nvn_frame_count(void) { return g_frame; }
-@@ -1456,12 +1547,16 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
+@@ -1456,12 +1549,16 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
      g_acq_wait_ns += wait; trow(g_frame, "@late_ms", wait ? (now_ns() - at) / 1e6 : 0);
      // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
      uint64_t tk = *idx < 4 ? o->ticket[*idx] : 0;
@@ -780,7 +845,7 @@ index 2080367a..f876ba90 100644
  NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow *w, int *idx) {
      (void)q; return h_nvnWindowAcquireTexture(w, NULL, idx) == NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS ? (NVNqueueAcquireTextureResult)0 : (NVNqueueAcquireTextureResult)1;
  }
-@@ -1586,6 +1681,10 @@ static void power_line(uint64_t frame) {
+@@ -1586,6 +1683,10 @@ static void power_line(uint64_t frame) {
          if (fs_ != pfs || fr != pfr || ft != pft) LOG("[nvn] same-pass feedback up to frame %llu, per frame: %.1f snapshots taken, %.1f draws reused one, %.1f read the tile (%.1f waited for their pipeline)",
              frame, (fs_ - pfs) / nf, (fr - pfr) / nf, (ft - pft) / nf, (fw - pfw) / nf);
          pfs = fs_; pfr = fr; pft = ft; pfw = fw;
@@ -791,7 +856,7 @@ index 2080367a..f876ba90 100644
          char tc[400]; dm_thread_cpu(tc, sizeof tc, s);
          LOG("[nvn] threads up to frame %llu: CPU %s", frame, tc); }
      else { char yt[192], rs[400], tc[400]; dm_yield_top(yt, sizeof yt); mtl_res_stats(rs, sizeof rs); dm_thread_cpu(tc, sizeof tc, 1); }   // the first call only takes the baselines
-@@ -1894,6 +1993,39 @@ static int fstep_hold(void) {
+@@ -1894,6 +1995,39 @@ static int fstep_hold(void) {
  }
  // Once per present, before this frame's period is taken: the time since the previous frame's start (shown) and the frame's cost decide this frame's hold and the next frame's step.
  // Cost = max(CPU: the time between the frames' starts without the pacing wait, GPU: the latest finished frame's GPU time), in vsyncs
@@ -831,7 +896,7 @@ index 2080367a..f876ba90 100644
  static void fstep_tick(const win_t *o, int c) {
      static uint64_t prev, t0, v0, fixed_sum, held[FSTEP_MAX + 1]; static int nlog;
      const double v = 1e9 / fstep_hz();
-@@ -1927,6 +2059,7 @@ static void fstep_tick(const win_t *o, int c) {
+@@ -1927,6 +2061,7 @@ static void fstep_tick(const win_t *o, int c) {
      g_fs.ramp = mtl_probe_ramp_on();
      g_fs.per_vsync = fstep_hz() / 60;
      int n = nvn_fstep_next(&g_fs, shown, cost, kmin, kmax, fixed, cslow || gslow);
@@ -839,7 +904,7 @@ index 2080367a..f876ba90 100644
      if (dm_fps_state) __atomic_store_n((uint32_t *)(dm_fps_state + 0x20), (uint32_t)n, __ATOMIC_RELAXED);
      atomic_store(&g_fs_k, g_fs.k);
      held[g_fs.k]++; if (fixed) fixed_sum += (uint64_t)n;   // the stubs count only the host's steps
-@@ -2002,8 +2135,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
+@@ -2002,8 +2137,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
      uint64_t t0 = now_ns();
      if (idx >= 0 && idx < o->ntex && idx < 4) {   // enqueue only, return immediately
          const tex_t *t = CTX(o->tex[idx]); int lc[4]; const int *crop = present_crop(o->crop, (int)t->d.width, (int)t->d.height, lc);
@@ -850,7 +915,7 @@ index 2080367a..f876ba90 100644
      }
      gfx_leave();
      atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
-@@ -2084,8 +2217,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
+@@ -2084,8 +2219,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
          uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
      prev_in = t0; prev_pass = ps; prev_draw = dr;
      dump_frame();
@@ -861,7 +926,7 @@ index 2080367a..f876ba90 100644
      // Real-device semantics: present only enqueues and returns immediately; this frame's display time is scheduled by the pacer, and the texture can be acquired again only at "display time + one period" (blocking in AcquireTexture)
      uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
      g_hold_ring[o->presents % 16] = (uint8_t)present_itv(o);
-@@ -2134,6 +2268,7 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b)
+@@ -2134,6 +2270,7 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b)
      // compressing encoder (when the pause menu opens, and near a save commit): the buffer's one use is a texture-to-buffer copy of the picture's own extent, which lies inside the pool. Not an error by itself: one line.
      if ((uint64_t)bb->off + bb->size > bb->pool->size) ONCE_LOG("BufferInitialize: a buffer reaches past the end of its pool (offset %#llx size %#llx pool %#llx); only an access that leaves the pool is an error, and it is reported where it happens", (unsigned long long)bb->off, (unsigned long long)bb->size, (unsigned long long)bb->pool->size);
      *(buf_t *)buf = (buf_t){.magic = MAGIC('B', 'U', 'F', 0), .pool = bb->pool, .off = bb->off, .size = bb->size};
@@ -869,7 +934,7 @@ index 2080367a..f876ba90 100644
      OLOG("BufferInitialize %p pool=%p off=%#llx size=%#llx", (void *)buf, (const void *)bb->pool, (unsigned long long)bb->off, (unsigned long long)bb->size);
      return 1;
  }
-@@ -2300,6 +2435,7 @@ NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappi
+@@ -2300,6 +2437,7 @@ NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappi
          if (o->mem && o->mem != base) { LOG("[RED] MapVirtual: non-contiguous mapping (true sparse) not implemented: virtual pool %p already maps to %p, this request wants %p", (void *)o, (void *)o->mem, (void *)base); return 0; }
          if (!o->mem) LOG("[nvn] MapVirtual: the storage of virtual pool %p (%#llx bytes) points at physical pool %p + %#llx", (void *)o, (unsigned long long)o->size, (const void *)ph, (unsigned long long)(r[i].poff - r[i].voff));
          o->mem = base;
@@ -877,7 +942,7 @@ index 2080367a..f876ba90 100644
      }
      return 1;
  }
-@@ -2382,6 +2518,7 @@ NVN(nvnBlendStateGetBlendEquation, void, const NVNblendState *s, NVNblendEquatio
+@@ -2382,6 +2520,7 @@ NVN(nvnBlendStateGetBlendEquation, void, const NVNblendState *s, NVNblendEquatio
  }
  NVN(nvnBlendStateGetAdvancedMode, NVNblendAdvancedMode, const NVNblendState *s) { return (NVNblendAdvancedMode)((const blend_st *)s)->adv; }
  NVN(nvnBlendStateGetAdvancedPremultipliedSrc, NVNboolean, const NVNblendState *s) { return !((const blend_st *)s)->adv_npm; }
@@ -885,7 +950,7 @@ index 2080367a..f876ba90 100644
  NVN(nvnBlendStateGetAdvancedOverlap, NVNblendAdvancedOverlap, const NVNblendState *s) { return (NVNblendAdvancedOverlap)((const blend_st *)s)->adv_ovl; }
  NVN(nvnPolygonStateGetCullFace, NVNface, const NVNpolygonState *s) { return (NVNface)((const poly_st *)s)->cull; }
  NVN(nvnPolygonStateGetFrontFace, NVNfrontFace, const NVNpolygonState *s) { return (NVNfrontFace)((const poly_st *)s)->front; }
-@@ -2645,6 +2782,7 @@ NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uin
+@@ -2645,6 +2784,7 @@ NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uin
  // Logged once each with the first value; open: what the values select on the console
  NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int mode) { (void)c; ONCE_LOG("nvnCommandBufferSetRecordingMode %d: the host records every command buffer alike", mode); }
  NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int mode) { (void)c; ONCE_LOG("nvnCommandBufferSetGeometryProcessingMode %d: no effect on Metal", mode); }
@@ -893,7 +958,7 @@ index 2080367a..f876ba90 100644
  NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int mode) { (void)c; ONCE_LOG("nvnCommandBufferSetComputeOverlapMode %d: the host runs compute in submission order", mode); }
  
  // nvnProgramSetSampleShading (NVN 53+): whether the program's fragment shader runs once per sample of a multisampled target. Metroid Prime Remastered sets it on its programs
-@@ -2872,7 +3010,7 @@ static void rec_downsample(NVNcommandBuffer *c, const NVNtexture *s, const NVNte
+@@ -2872,7 +3012,7 @@ static void rec_downsample(NVNcommandBuffer *c, const NVNtexture *s, const NVNte
      p_copy_t2t *o = REC_SNAP(c, OP_COPY_T2T, p_copy_t2t, 2);
      o->src = tex_snap(o, SNAP_OFF(p_copy_t2t), 0, s, ra); o->dst = tex_snap(o, SNAP_OFF(p_copy_t2t), 1, d, ra);
      copy_view(&o->sv, &o->has_sv, sv); copy_view(&o->dv, &o->has_dv, dv);
@@ -902,7 +967,7 @@ index 2080367a..f876ba90 100644
      if (o->src) o->sr = (NVNcopyRegion){0, 0, 0, (int)o->src->d.width, (int)o->src->d.height, 1};
      if (o->dst) o->dr = (NVNcopyRegion){0, 0, 0, (int)o->dst->d.width, (int)o->dst->d.height, 1};
      o->flags = DM_COPY_RESOLVE;
-@@ -2900,6 +3038,17 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
+@@ -2900,6 +3040,17 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
          }
      return 0;
  }
@@ -920,7 +985,7 @@ index 2080367a..f876ba90 100644
  static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
      if (!t->mem) { LOG("[RED] WriteTexels: texture has no storage"); return; }
      int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-@@ -2955,7 +3104,7 @@ int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NV
+@@ -2955,7 +3106,7 @@ int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NV
      int nz = r->depth ? r->depth : 1;
      for (int z = 0; z < nz; z++) {
          unsigned layer = layer0 + (unsigned)(r->zoffset + z);
@@ -929,7 +994,7 @@ index 2080367a..f876ba90 100644
      }
      return 0;
  }
-@@ -2970,7 +3119,7 @@ int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRe
+@@ -2970,7 +3121,7 @@ int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRe
      int nz = sr->depth ? sr->depth : 1, ok = 1;
      for (int z = 0; z < nz && ok; z++) {
          unsigned layer = ds + (unsigned)(dr->zoffset + z);
@@ -6081,7 +6146,7 @@ index 5d7f6180..a5a52143 100644
  #include "nvn_capture.inc"   // DM_NVN_CAPTURE (one frame for dm/gfx/tests/nvn_replay)
  #pragma clang attribute pop
 diff --git a/dm/gfx/nvn/nvn_obj.h b/dm/gfx/nvn/nvn_obj.h
-index 1afc4126..78c6f607 100644
+index 1afc4126..db85defc 100644
 --- a/dm/gfx/nvn/nvn_obj.h
 +++ b/dm/gfx/nvn/nvn_obj.h
 @@ -20,8 +20,7 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; int origin_ll
@@ -6159,7 +6224,7 @@ index 1afc4126..78c6f607 100644
  void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
  unsigned mtl_cpu_tex_count(void);   // live textures the CPU writes (retired snapshots are excluded)
  uint64_t mtl_pkg_edge_skips(void);   // packaged texture checks that found only writes beside the texture (pkg_edges_clean)
-@@ -257,7 +268,10 @@ void mtl_reg_tex_gone(int id);   // the ID stays registered, its memory pool fin
+@@ -257,17 +268,23 @@ void mtl_reg_tex_gone(int id);   // the ID stays registered, its memory pool fin
  void mtl_reg_image(int id, const tex_t *t, const view_t *v);   // RegisterImage declares image use even when the builder omitted IMAGE
  // textures written by WriteTexels (recorded by serial): the replay layer treats them like packaged textures, uploaded from guest memory and re-uploaded on dirty pages
  void mtl_tex_cpu_written(const tex_t *t);
@@ -6170,7 +6235,12 @@ index 1afc4126..78c6f607 100644
  // hle_nvn.c: a texture tex_flush_upload / tex_dirty_upload registered and has not resolved yet; GPU copies written into the destination texture's storage as well (see there)
  int nvn_ft_tracked(uint64_t serial);
  int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img);
-@@ -268,6 +282,8 @@ int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
+ int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRegion *sr, const tex_t *d, unsigned dl, unsigned ds, const NVNcopyRegion *dr);
+ // A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
+-// a stage whose code area was not yet in any memory pool then is computed the first time it is asked for. Returns 0 = no such stage
++// a stage whose code area was not yet in any memory pool then is computed the first time it is asked for, from the host's copy of its control section. The keys belong to
++// the program's serial, so a copy of the NVNprogram the game made after SetShaders finds them. Returns 0 = no such stage
+ int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
  void nvn_ctl_lens(const void *control, uint32_t *nctl, uint32_t *ncode);   // a control section's bytes in the shader key and its code area's length (NVN or NVN2), hle_nvn.c
  void mtl_reg_samp(int id, const samp_par *p);
  void mtl_prog_release(prog_t *p);
@@ -6613,7 +6683,7 @@ index 77e04414..d09f526a 100644
 +    return hz == NVN_TS_HZ_DEFAULT ? (uint64_t)((__uint128_t)ticks * 625 / 384) : (uint64_t)((__uint128_t)ticks * 1000000000u / hz);
 +}
 diff --git a/dm/gfx/tests/Makefile b/dm/gfx/tests/Makefile
-index 91a49ea3..8f78811f 100644
+index 91a49ea3..a61e3d40 100644
 --- a/dm/gfx/tests/Makefile
 +++ b/dm/gfx/tests/Makefile
 @@ -28,10 +28,10 @@ MTL_T_DEP=../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_s
@@ -6736,7 +6806,17 @@ index 91a49ea3..8f78811f 100644
  t_pso_depth_stencil: t_pso_depth_stencil.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_depth_stencil.m $(MTL_T_SRC) $(FW)
  .PHONY: check_t_pso_depth_stencil
-@@ -313,7 +358,7 @@ t_pso_archive: t_pso_archive.m $(MTL_T_DEP)
+@@ -305,6 +350,9 @@ check_t_pso_depth_stencil: t_pso_depth_stencil
+ t_pull: t_pull.m ../tools/dmsh_pull.metal $(MTL_T_DEP)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_pull.m $(MTL_T_SRC) $(FW)
+ check_t_pull: RUN_ENV = MTL_DEBUG_LAYER=1
++t_frag_z: t_frag_z.m ../tools/dmsh_build.py
++	clang -O1 -g -Wall -fobjc-arc -o $@ t_frag_z.m -framework Metal -framework Foundation
++check_t_frag_z: RUN_ENV = MTL_DEBUG_LAYER=1
+ t_pull_inv: t_pull_inv.m ../tools/dmsh_pull.py ../tools/dmsh_pull.metal
+ 	clang -O1 -g -Wall -fobjc-arc -o $@ t_pull_inv.m -framework Metal -framework Foundation
+ check_t_pull_inv: RUN_ENV = MTL_DEBUG_LAYER=1
+@@ -313,7 +361,7 @@ t_pso_archive: t_pso_archive.m $(MTL_T_DEP)
  .PHONY: check_t_pso_archive
  check_t_pso_archive: t_pso_archive
  	MTL_DEBUG_LAYER=1 ./t_pso_archive
@@ -6745,7 +6825,7 @@ index 91a49ea3..8f78811f 100644
  t_pso_bundle: t_pso_bundle.m ../tools/pso_offline.py $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_bundle.m $(MTL_T_SRC) $(FW)
  t_pso_stall: t_pso_stall.m $(MTL_T_DEP)
-@@ -336,7 +381,7 @@ t_border: t_border.m $(MTL_T_DEP)
+@@ -336,7 +384,7 @@ t_border: t_border.m $(MTL_T_DEP)
  .PHONY: check_t_border
  check_t_border: t_border
  	MTL_DEBUG_LAYER=1 ./t_border
@@ -6754,7 +6834,7 @@ index 91a49ea3..8f78811f 100644
  t_view_levels: t_view_levels.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_view_levels.m $(MTL_T_SRC) $(FW)
  check_t_view_levels: RUN_ENV = MTL_DEBUG_LAYER=1
-@@ -369,6 +414,9 @@ t_missing_src1: t_missing_src1.m $(MTL_T_DEP)
+@@ -369,6 +417,9 @@ t_missing_src1: t_missing_src1.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_missing_src1.m $(MTL_T_SRC) $(FW)
  check_t_integer_blend: RUN_ENV = MTL_DEBUG_LAYER=1
  check_t_missing_src1: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -6764,7 +6844,7 @@ index 91a49ea3..8f78811f 100644
  t_primitive_restart: t_primitive_restart.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_primitive_restart.m $(MTL_T_SRC) $(FW)
  check_t_primitive_restart: RUN_ENV = MTL_DEBUG_LAYER=1
-@@ -404,11 +452,21 @@ check_t_unwritten_store: RUN_ENV = MTL_DEBUG_LAYER=1
+@@ -404,11 +455,21 @@ check_t_unwritten_store: RUN_ENV = MTL_DEBUG_LAYER=1
  t_upgrade_alias: t_upgrade_alias.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_upgrade_alias.m $(MTL_T_SRC) $(FW)
  check_t_upgrade_alias: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -6786,7 +6866,7 @@ index 91a49ea3..8f78811f 100644
  .PHONY: check_t_image_alias
  check_t_image_alias: t_image_alias
  	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_image_alias
-@@ -432,6 +490,9 @@ check_t_dlss_mfx: t_dlss_mfx
+@@ -432,6 +493,9 @@ check_t_dlss_mfx: t_dlss_mfx
  t_image_usage: t_image_usage.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_image_usage.m $(MTL_T_SRC) $(FW)
  check_t_image_usage: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -6796,7 +6876,7 @@ index 91a49ea3..8f78811f 100644
  t_stencil_view: t_stencil_view.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_stencil_view.m $(MTL_T_SRC) $(FW)
  check_t_stencil_view: RUN_ENV = MTL_DEBUG_LAYER=1
-@@ -460,3 +521,41 @@ t_logic: t_logic.m $(MTL_T_DEP)
+@@ -460,3 +524,41 @@ t_logic: t_logic.m $(MTL_T_DEP)
  	clang $(CFLAGS) -fobjc-arc -o $@ t_logic.m $(MTL_T_SRC) $(FW)
  check_t_logic: t_logic
  	@set -e; work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; python3 test_dmsh_logic.py --fixture "$$work"; MTL_DEBUG_LAYER=1 ./t_logic "$$work"
@@ -6839,7 +6919,7 @@ index 91a49ea3..8f78811f 100644
 +	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=0 ./$<
 +	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=1 ./$<
 diff --git a/dm/gfx/tests/nvn_replay.m b/dm/gfx/tests/nvn_replay.m
-index 32dc0a6d..adb84536 100644
+index 32dc0a6d..833a5439 100644
 --- a/dm/gfx/tests/nvn_replay.m
 +++ b/dm/gfx/tests/nvn_replay.m
 @@ -139,7 +139,7 @@ static void add_pools(const uint8_t *d, size_t n) {   // the replay layer's pool
@@ -6872,6 +6952,16 @@ index 32dc0a6d..adb84536 100644
          rp_ch = realloc(rp_ch, (rp_nch + 1) * sizeof *rp_ch); rp_ch[rp_nch++] = (chunk){c, d}; }
      cap_unload(&rd);
      // header: game, layout, chain; then the live run's settings
+@@ -280,7 +294,8 @@ int main(int argc, char **argv) { @autoreleasepool {
+     }
+     // pointers into the tables are fixed now (no more realloc): decode the texture objects, install the program keys and descriptor-pool bases in hle_nvn.c's side tables
+     for (uint32_t i = 0; i < rp_nto; i++) cap_tex_fields(&rp_to[i], &rp_dec, NULL);
+-    for (uint32_t i = 0; i < rp_npr; i++) { prog_keys_t *k = pk_get(&rp_pr[i], 1); memcpy(k->key, rp_prc[i].key, sizeof k->key); k->ok = rp_prc[i].ok; }
++    for (uint32_t i = 0; i < rp_npr; i++) if (rp_pr[i].serial) { prog_keys_t *k = pk_get(rp_pr[i].serial);   // keyed by serial, as SetShaders keys them
++        memcpy(k->key, rp_prc[i].key, sizeof k->key); k->ok = rp_prc[i].ok; }
+     for (size_t i = 0; i < rp_nch; i++) if (rp_ch[i].c.tag == CAP_DPOL) for (size_t o = 0; o + sizeof(cap_dpol) <= rp_ch[i].c.raw; o += sizeof(cap_dpol)) { cap_dpol p; memcpy(&p, rp_ch[i].d + o, sizeof p);
+         if (g_ntpb < NDPOOL) g_tpb[g_ntpb++] = (struct dpool_base){&rp_dp[p.index], p.tex_base}; if (g_nspb < NDPOOL) g_spb[g_nspb++] = (struct dpool_base){&rp_dp[p.index], p.samp_base}; }
+     // how the replay layer held each texture: live ones are initialized (kept in the serial table, not the small ghost ring), CPU-written ones uploaded from their pools
 diff --git a/dm/gfx/tests/t_addr_known.m b/dm/gfx/tests/t_addr_known.m
 new file mode 100644
 index 00000000..15994d41
@@ -7909,6 +7999,140 @@ index 1abb3fd4..b3f76e79 100644
      printf("feedback snapshot: %d checks, %d failed\n", checks, failed);
      return failed != 0;
  } }
+diff --git a/dm/gfx/tests/t_frag_z.m b/dm/gfx/tests/t_frag_z.m
+new file mode 100644
+index 00000000..86738b58
+--- /dev/null
++++ b/dm/gfx/tests/t_frag_z.m
+@@ -0,0 +1,128 @@
++// A fragment shader's depth against the depth the same surface stored (dmsh_build.py frag_z): each of 40 random triangles, plus one at depth 0, is drawn into depth, then
++// drawn again by fragment shaders in a reduced translator shape that read that depth: a probe that records whether position.z is above or below the stored value, and the
++// comparisons whose answer a same-surface pixel changes, `discard when z > stored` and `keep only when z <= stored` (a ground mist's shape), each also mirrored (stored < z,
++// stored >= z), with z through the translator's flush of a denormal, as written and after frag_z. position.z must never be below the stored depth (leaving z >= x and z < x alone
++// relies on it), and after frag_z all four keep every covered pixel. The control: with the pre-pass drawn slightly nearer, the surface is a different one, and after frag_z all
++// four must still reject every pixel. The probe's count of pixels above is printed: on a GPU where it is 0, the as-written shaders drop nothing either.
++#import <Foundation/Foundation.h>
++#import <Metal/Metal.h>
++#include <simd/simd.h>
++static int checks, failed;
++#define EXPECT(name, want, got) do { uint64_t w = (want), g = (got); checks++; if (w != g) { fprintf(stderr, "%s: expected %llu, got %llu\n", name, (unsigned long long)w, (unsigned long long)g); failed++; } } while (0)
++
++static uint32_t next(uint32_t *s) { *s ^= *s << 13; *s ^= *s >> 17; *s ^= *s << 5; return *s; }   // xorshift32
++
++static NSString *k_vs = @"#include <metal_stdlib>\nusing namespace metal;\nstruct V { float4 gl_Position [[position, invariant]]; };\nstruct U { float4 v[3]; };\n"
++    "vertex V vs(uint i [[vertex_id]], constant U& u [[buffer(0)]]) { V o; o.gl_Position = u.v[i]; return o; }\n"
++    "fragment void depth_only() {}\n"
++    "fragment float4 probe(float4 p [[position]], depth2d<float> d [[texture(0)]]) { float s = d.read(uint2(p.xy)); return float4(p.z > s ? 1.0 : 0.0, p.z < s ? 1.0 : 0.0, 0.0, 1.0); }\n";
++// position.z into a temporary, the translator's flush of a denormal, then the comparison with the stored depth into a bool
++static NSString *mist(NSString *cmp, NSString *drop) {
++    return [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\nstruct main0_out { float4 c [[color(0)]]; };\n"
++        "fragment main0_out main0(float4 gl_FragCoord [[position]], depth2d<float> d [[texture(0)]])\n{\n    main0_out out = {};\n"
++        "    float _102 = gl_FragCoord.z;\n    float _112 = abs(_102);\n    bool _116 = _112 < 1.1754943508222875079687365372222e-38;\n    float _118 = _116 ? 0.0 : _102;\n"
++        "    float _124 = d.read(uint2(gl_FragCoord.xy));\n    bool _126 = %@;\n    if (%@_126) discard_fragment();\n"
++        "    out.c = float4(1.0);\n    return out;\n}\n", cmp, drop];
++}
++
++int main(void) { @autoreleasepool {
++    id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); id<MTLCommandQueue> q = [dev newCommandQueue]; NSError *e = nil;
++    enum { NS = 4 };   // `z > stored` drops, `z <= stored` keeps, and their mirrors
++    NSString *src[2 * NS] = { mist(@"_118 > _124", @""), mist(@"_118 <= _124", @"!"), mist(@"_124 < _118", @""), mist(@"_124 >= _118", @"!") };   // [NS..] after frag_z
++    char dir[] = "/tmp/t_frag_z.XXXXXX"; if (!mkdtemp(dir)) return 1;
++    NSString *root = @(dir); if (!root) return 1;
++    // frag_z alone, as test_dmsh_frag_z.py takes it: dmsh_build.py is not imported whole
++    NSMutableArray<NSString *> *args = [NSMutableArray arrayWithObjects:@"python3", @"-c", @"import ast, re, sys; t = ast.parse(open('../tools/dmsh_build.py').read()); s = {'re': re}; "
++        "exec(compile(ast.Module(body=[n for n in t.body if isinstance(n, ast.FunctionDef) and n.name == 'frag_z'], type_ignores=[]), 'dmsh_build.py', 'exec'), s); "
++        "[open(o, 'w').write(s['frag_z'](open(i).read())) for i, o in zip(sys.argv[1::2], sys.argv[2::2])]", nil];
++    for (int i = 0; i < NS; i++) {
++        NSString *a = [root stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.metal", i]], *b = [root stringByAppendingPathComponent:[NSString stringWithFormat:@"%dz.metal", i]];
++        [src[i] writeToFile:a atomically:NO encoding:NSUTF8StringEncoding error:nil]; [args addObject:a]; [args addObject:b];
++    }
++    NSTask *py = [NSTask new]; py.executableURL = [NSURL fileURLWithPath:@"/usr/bin/env"]; py.arguments = args;
++    if (![py launchAndReturnError:&e]) { fprintf(stderr, "frag_z: %s\n", e.localizedDescription.UTF8String); return 1; }
++    [py waitUntilExit];
++    if (py.terminationStatus) { fprintf(stderr, "frag_z failed\n"); return 1; }
++    int rewritten = 0;
++    for (int i = 0; i < NS; i++) {
++        NSString *s = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:[NSString stringWithFormat:@"%dz.metal", i]] encoding:NSUTF8StringEncoding error:nil];
++        if (!s) { fprintf(stderr, "frag_z wrote no %dz.metal\n", i); return 1; }
++        src[NS + i] = s; rewritten += ![s isEqualToString:src[i]];
++    }
++    [NSFileManager.defaultManager removeItemAtPath:root error:nil];
++    EXPECT("frag_z rewrote all four comparisons", NS, rewritten);
++
++    MTLCompileOptions *o = [MTLCompileOptions new]; o.preserveInvariance = YES;   // the chain's -fpreserve-invariance
++    id<MTLLibrary> lv = [dev newLibraryWithSource:k_vs options:o error:&e];
++    if (!lv) { fprintf(stderr, "compile: %s\n", e.localizedDescription.UTF8String); return 1; }
++    enum { W = 384, H = 216, NT = 41, NP = 1 + 2 * NS };   // pipelines: 0 probe, 1..NS as written, NS+1..2NS after frag_z
++    MTLPixelFormat DF = MTLPixelFormatDepth32Float;
++    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = [lv newFunctionWithName:@"vs"];
++    pd.fragmentFunction = [lv newFunctionWithName:@"depth_only"]; pd.depthAttachmentPixelFormat = DF;
++    id<MTLRenderPipelineState> pdepth = [dev newRenderPipelineStateWithDescriptor:pd error:&e];
++    id<MTLRenderPipelineState> pp[NP];
++    pd.depthAttachmentPixelFormat = MTLPixelFormatInvalid; pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
++    for (int k = 0; k < NP; k++) {
++        id<MTLLibrary> l = k ? [dev newLibraryWithSource:src[k - 1] options:o error:&e] : lv;
++        if (!l) { fprintf(stderr, "compile %d: %s\n", k, e.localizedDescription.UTF8String); return 1; }
++        pd.fragmentFunction = [l newFunctionWithName:k ? @"main0" : @"probe"]; pp[k] = [dev newRenderPipelineStateWithDescriptor:pd error:&e];
++        if (!pp[k]) { fprintf(stderr, "pipeline %d: %s\n", k, e.localizedDescription.UTF8String); return 1; }
++    }
++    MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new]; dd.depthCompareFunction = MTLCompareFunctionLessEqual; dd.depthWriteEnabled = YES;
++    id<MTLDepthStencilState> dw = [dev newDepthStencilStateWithDescriptor:dd];
++    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:DF width:W height:H mipmapped:NO];
++    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
++    id<MTLTexture> depth = [dev newTextureWithDescriptor:td];
++    td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:W height:H mipmapped:NO]; td.usage = MTLTextureUsageRenderTarget;
++    id<MTLTexture> col = [dev newTextureWithDescriptor:td];
++    // kept[near][k]: pixels the pipeline kept, with the pre-pass the same triangle (near 0) or the same triangle 1e-4 nearer (near 1, the control)
++    uint64_t covered = 0, above = 0, below = 0, kept[2][NP] = {{0}}, zero_covered = 0, zero_kept[NP] = {0}, near_covered = 0;
++    uint8_t *px = malloc(W * H * 4); if (!px) return 1;
++    uint32_t seed = 7;   // the same triangles every run
++    for (int t = 0; t < NT; t++) {
++        simd_float4 v[3], vn[3];
++        for (int i = 0; i < 3; i++) {
++            float w = 0.5f + (next(&seed) % 1000) / 200.f, x = -1.5f + (next(&seed) % 3000) / 1000.f, y = -1.5f + (next(&seed) % 3000) / 1000.f, zn = 0.94f + (next(&seed) % 590) / 10000.f;
++            if (t == NT - 1) zn = 0;   // the last triangle lies at depth 0
++            v[i] = simd_make_float4(x * w, y * w, zn * w, w); vn[i] = simd_make_float4(x * w, y * w, (zn - 1e-4f) * w, w);
++        }
++        for (int near = 0; near < 2; near++) {
++            if (near && t == NT - 1) continue;   // nothing is nearer than 0
++            for (int k = near ? 1 : 0; k < NP; k++) {
++                id<MTLCommandBuffer> cb = [q commandBuffer];
++                MTLRenderPassDescriptor *r = [MTLRenderPassDescriptor renderPassDescriptor];
++                r.depthAttachment.texture = depth; r.depthAttachment.loadAction = MTLLoadActionClear; r.depthAttachment.clearDepth = 1; r.depthAttachment.storeAction = MTLStoreActionStore;
++                id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:r];
++                [en setRenderPipelineState:pdepth]; [en setDepthStencilState:dw]; [en setVertexBytes:near ? vn : v length:sizeof v atIndex:0];
++                [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding];
++                r = [MTLRenderPassDescriptor renderPassDescriptor];
++                r.colorAttachments[0].texture = col; r.colorAttachments[0].loadAction = MTLLoadActionClear; r.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0); r.colorAttachments[0].storeAction = MTLStoreActionStore;
++                en = [cb renderCommandEncoderWithDescriptor:r];
++                [en setRenderPipelineState:pp[k]]; [en setVertexBytes:v length:sizeof v atIndex:0]; [en setFragmentTexture:depth atIndex:0];
++                [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding];
++                [cb commit]; [cb waitUntilCompleted];
++                if (cb.status != MTLCommandBufferStatusCompleted) { fprintf(stderr, "command buffer failed\n"); return 1; }
++                [col getBytes:px bytesPerRow:W * 4 fromRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0];
++                for (int i = 0; i < W * H; i++) {
++                    uint8_t *c = px + i * 4; if (!c[3]) continue;
++                    kept[near][k]++; if (!near && t == NT - 1) zero_kept[k]++;
++                    if (k == 0) { covered++; if (t == NT - 1) zero_covered++; else near_covered++; above += c[0] > 127; below += c[1] > 127; }
++                }
++            }
++        }
++    }
++    free(px);
++    printf("%s: %llu covered pixels, position.z above the stored depth on %llu (%.2f %%), below on %llu; kept as written / after frag_z: `z > stored` %llu / %llu, "
++           "`z <= stored` %llu / %llu, `stored < z` %llu / %llu, `stored >= z` %llu / %llu; pre-pass nearer, after frag_z: %llu %llu %llu %llu of %llu\n", dev.name.UTF8String, covered, above,
++           100.0 * above / covered, below, kept[0][1], kept[0][1 + NS], kept[0][2], kept[0][2 + NS], kept[0][3], kept[0][3 + NS], kept[0][4], kept[0][4 + NS],
++           kept[1][1 + NS], kept[1][2 + NS], kept[1][3 + NS], kept[1][4 + NS], near_covered);
++    EXPECT("the test covers pixels, the depth-0 triangle too", 1, covered > 0 && zero_covered > 0);
++    EXPECT("position.z is never below the depth the same surface stored", 0, below);
++    for (int s = 1; s <= NS; s++) {
++        EXPECT("as written, the comparison drops exactly the pixels whose position.z is above", covered - above, kept[0][s]);
++        EXPECT("after frag_z, the same surface keeps every covered pixel", covered, kept[0][s + NS]);
++        EXPECT("after frag_z, the triangle at depth 0 keeps every pixel", zero_covered, zero_kept[s + NS]);
++        EXPECT("control: after frag_z, a surface behind the stored depth is rejected everywhere", 0, kept[1][s + NS]);
++    }
++    printf("== %d checks, %d failed ==\n", checks, failed); return failed != 0;
++} }
 diff --git a/dm/gfx/tests/t_fuse_check.m b/dm/gfx/tests/t_fuse_check.m
 index 8b94a984..6dc5481d 100644
 --- a/dm/gfx/tests/t_fuse_check.m
@@ -12204,6 +12428,96 @@ index ba7d1af7..647452bb 100644
  
  if __name__ == '__main__':
      if len(sys.argv) == 3 and sys.argv[1] == '--fixture': fixture(sys.argv[2])
+diff --git a/dm/gfx/tests/test_dmsh_frag_z.py b/dm/gfx/tests/test_dmsh_frag_z.py
+new file mode 100644
+index 00000000..be30462c
+--- /dev/null
++++ b/dm/gfx/tests/test_dmsh_frag_z.py
+@@ -0,0 +1,84 @@
++"""A fragment shader's depth against the depth the same surface stored (dmsh_build.py frag_z): the comparisons a same-surface pixel must fail take position.z one ULP down, and no others change."""
++import ast
++from pathlib import Path
++import re
++import struct
++import unittest
++
++TOOLS = Path(__file__).resolve().parents[1] / 'tools'
++tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
++selected = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'frag_z']
++scope = {'re': re}
++exec(compile(ast.Module(body=selected, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), scope)
++frag_z = scope['frag_z']
++
++DOWN = 'as_type<float>(as_type<uint>({0}) - uint({0} > 0.0))'
++
++
++def shader(line):
++    return f'''fragment main0_out main0(float4 gl_FragCoord [[position]])
++{{
++    float _106 = gl_FragCoord.z;
++    float _116 = abs(_106);
++    bool _120 = _116 < 1.17e-38;
++    float _122 = _120 ? 0.0 : _106;
++    float _128 = _104;
++    float _5 = _7 * 2.0;
++    {line}
++}}
++'''
++
++
++class FragZ(unittest.TestCase):
++    def test_comparisons_that_take_z_down(self):
++        for line, want in (('bool _130 = _122 > _128;', f'bool _130 = {DOWN.format("_122")} > _128;'),
++                           ('bool _130 = _106 > _128;', f'bool _130 = {DOWN.format("_106")} > _128;'),
++                           ('bool _130 = _122 <= _128;', f'bool _130 = {DOWN.format("_122")} <= _128;'),
++                           ('bool _130 = _128 < _122;', f'bool _130 = _128 < {DOWN.format("_122")};'),
++                           ('bool _130 = _128 >= _122;', f'bool _130 = _128 >= {DOWN.format("_122")};')):
++            with self.subTest(line):
++                self.assertIn(want, frag_z(shader(line)))
++
++    def test_comparisons_that_already_give_the_maxwell_answer(self):
++        for line in ('bool _130 = _122 >= _128;', 'bool _130 = _122 < _128;', 'bool _130 = _128 > _122;', 'bool _130 = _128 <= _122;'):
++            with self.subTest(line):
++                self.assertEqual(frag_z(shader(line)), shader(line))
++
++    def test_values_that_are_not_the_depth(self):
++        src = shader('bool _130 = _5 > _128;')
++        self.assertEqual(frag_z(src), src)
++        src = shader('bool _130 = _122 > _106;')   # both are the depth
++        self.assertEqual(frag_z(src), src)
++        src = shader('float _130 = _122 * _128;')   # a linearization
++        self.assertEqual(frag_z(src), src)
++
++    def test_a_same_surface_pixel_gets_the_maxwell_answer(self):
++        # the rewritten expression, evaluated as Metal does with 32-bit floats: as_type<uint> / as_type<float> reinterpret the bits, uint(bool) is 0 or 1
++        expr = re.search(r'bool _130 = (.*) > _128;', frag_z(shader('bool _130 = _106 > _128;'))).group(1)
++        bits = lambda f: struct.unpack('<I', struct.pack('<f', f))[0]
++        flt = lambda u: struct.unpack('<f', struct.pack('<I', u & 0xffffffff))[0]
++        py = expr.replace('as_type<uint>(', 'bits(').replace('as_type<float>(', 'flt(').replace('uint(', 'int(').replace('_106', 'z')
++        py = re.sub(r'\b(\d+)u\b', r'\1', py)   # an unsigned literal, should the expression use one
++        for z in (0.0, flt(1), flt(0x00800000), 0.25, flt(bits(0.5) + 1), 1.0):   # 0, the smallest denormal and normal, a value one ULP above 0.5, the far plane
++            for stored in (z, flt(bits(z) - 1) if z > 0.0 else z):   # what the rasterizer stored for the same surface: equal, or one ULP below
++                d = eval(py, {'flt': flt, 'bits': bits, 'z': z})
++                with self.subTest(z=z, stored=stored):
++                    self.assertFalse(d > stored)   # z > stored must fail
++                    self.assertTrue(d <= stored)   # z <= stored must pass
++            if z > 0.0:   # a surface two ULP nearer is another surface: it must still fail z <= stored
++                nearer = flt(bits(z) - 2) if bits(z) >= 2 else 0.0
++                d = eval(py, {'flt': flt, 'bits': bits, 'z': z})
++                with self.subTest(z=z, stored=nearer):
++                    self.assertTrue(d > nearer or nearer == 0.0 == d)
++
++    def test_a_shader_that_does_not_read_it(self):
++        src = 'fragment main0_out main0()\n{\n    bool _1 = _2 > _3;\n}\n'
++        self.assertEqual(frag_z(src), src)
++
++    def test_a_copy_of_something_else_is_not_the_depth(self):
++        src = shader('float _9 = _8 ? 0.0 : _5;\n    bool _130 = _9 > _128;')
++        self.assertEqual(frag_z(src), src)
++
++
++if __name__ == '__main__':
++    unittest.main()
 diff --git a/dm/gfx/tests/test_dmsh_gather_offsets.py b/dm/gfx/tests/test_dmsh_gather_offsets.py
 new file mode 100644
 index 00000000..d7fc708f
@@ -13323,7 +13637,7 @@ index 00000000..7815eb72
 +if __name__ == '__main__':
 +    unittest.main()
 diff --git a/dm/gfx/tools/dmsh_build.py b/dm/gfx/tools/dmsh_build.py
-index a9fbb08d..541e0b60 100644
+index a9fbb08d..6aebdb48 100644
 --- a/dm/gfx/tools/dmsh_build.py
 +++ b/dm/gfx/tools/dmsh_build.py
 @@ -2,14 +2,17 @@
@@ -13357,7 +13671,7 @@ index a9fbb08d..541e0b60 100644
      if _g and _g != GAME.id: sys.exit(f'[RED] {_d} holds the shader libraries of game {_g}, not {GAME.id}: give each game its own output directory')
  MAP = str(GAME.table('shader_map.tsv'))
  BF_WANT_FILE = str(GAME.table('bf_want.tsv'))
-@@ -51,24 +55,49 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
+@@ -51,24 +55,74 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
  # GX lighting takes max(0, NaN) from light directions left at zero, and the half of Mario its fill light faces came out white on the iPhone (GitHub issue 72; vk_shaders.py PRECISE)
  def precise(msl): return re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', msl)
  
@@ -13365,6 +13679,31 @@ index a9fbb08d..541e0b60 100644
 -# the subgroup's 256-word block of the scratch shared memory as the last argument (InstEmitAmpereTensor.AHmma, TensorPass, HelperFunctionManager.GenerateHmma16816F16). The
 -# translator's body computes D lane by lane from the block; here it becomes simdgroup_matrix code over the same block: A row-major (halves 0..255, 16 a row), B transposed
 -# (256..383, row n, 16 halves of k, loaded transposed), C / D row-major (384..511, 8 a row). Per HMMA on an M4 Pro: 1.08 ns a SIMD-group against 5.4 for the shuffle emulation
++# A fragment shader that compares its own depth with what the same surface stored: Metal's [[position]].z and the depth the rasterizer stores are not one value. On an M4 Max position.z is one ULP
++# above the stored depth on some pixels and never below (2.34 % of 552,088 pixels in t_frag_z; other GPUs not measured). The Switch GPU evidently gives equal values, since games rely on it: The Legend of
++# Zelda: Ocarina of Time draws its ground mist after a mesh depth pre-pass and discards when z > stored (5ad65c0eefd09c7f), which left black specks, often in pairs, through the mist. So the two
++# comparisons whose answer such a pixel changes, z > x (it must fail) and its negation z <= x (it must pass), take z one ULP down, and so do their mirrors x < z and x >= z. z >= x and z < x stay:
++# position.z never being below the stored depth, they already give the answer, and one ULP down would turn it. z of 0 stays 0: position.z is never below the stored depth, so the stored depth is 0
++# too and both comparisons already give the answer (one ULP down from 0 would be a NaN). z is gl_FragCoord.z or a plain copy of it, also through a select with 0.0 (the translator's flush of a
++# denormal, x ? 0.0 : z). Not reached: z scaled before the comparison (40 more of that game's shaders multiply z by a constant first; the one read is a depth fade against a sampled depth
++# times the same constant), a comparison other than two variables into a bool, == and != (none in that game), and the Vulkan and GL routes (vk_shaders.py, gl_shaders.py).
++def frag_z(msl):
++    if 'gl_FragCoord.z' not in msl: return msl
++    z = set(re.findall(r'float (_\d+) = gl_FragCoord\.z;', msl))
++    n = -1
++    while n != len(z):
++        n = len(z)
++        for m in re.finditer(r'float (_\d+) = (?:_\d+ \? 0\.0 : )?(_\d+);', msl):
++            if m.group(2) in z: z.add(m.group(1))
++    down = lambda v: f'as_type<float>(as_type<uint>({v}) - uint({v} > 0.0))'
++    def one(m):
++        a, op, b = m.group(2), m.group(3), m.group(4)
++        if op in ('>', '<=') and a in z and b not in z: a = down(a)
++        elif op in ('<', '>=') and b in z and a not in z: b = down(b)
++        else: return m.group(0)
++        return f'bool {m.group(1)} = {a} {op} {b};'
++    return re.sub(r'bool (_\d+) = (_\d+) (>=|<=|>|<) (_\d+);', one, msl)
++
 +# Ampere HMMA.16816 with an f16 accumulator (agl's upscaler networks, the NDVE video networks) reaches the MSL as calls of dmsh_hmma16816_f16(lane, block, A0..A3, B0, B1, C0, C1,
 +# flags, A's LDSM address, A0..A3's offsets, A's row stride, out D1) → D0, the subgroup's 256-word block of the scratch shared memory as the last argument (InstEmitAmpereTensor.AHmma,
 +# TensorPass, HelperFunctionManager.GenerateHmma16816F16). The translator's body computes D lane by lane from the block; here it becomes simdgroup_matrix code over the same block:
@@ -13419,7 +13758,7 @@ index a9fbb08d..541e0b60 100644
      simdgroup_store(c0, h + 384, 8, ulong2(0, 0)); simdgroup_store(c1, h + 384, 8, ulong2(0, 8));
      simdgroup_barrier(mem_flags::mem_threadgroup);
      uint d0 = s[192 + g * 4 + t], d1 = s[192 + (g + 8) * 4 + t];
-@@ -76,6 +105,68 @@ HMMA_BODY = '''{
+@@ -76,6 +130,68 @@ HMMA_BODY = '''{
      %(d1)s = as_type<%(dt)s>(d1);
      return as_type<%(rt)s>(d0);
  }'''
@@ -13488,7 +13827,7 @@ index a9fbb08d..541e0b60 100644
  # A store only the very first invocation of a dispatch makes (a compute shader's preamble: `if (-local.x == workgroup.x << log2(local size)) buffer[k] = value`). Hoian_Proc in Splatoon Raiders resets its append counter
  # that way, with the other invocations adding to the counter at their end, hundreds of instructions later. On the Switch the first workgroup starts ahead of them. Apple's GPUs start workgroups in no order: a workgroup that had appended before
  # the reset lost its plants to the next one's, a different few each frame, and they flickered. So the store leaves the shader and the host makes it, in order, before the dispatch (the reflection's first_store, nvn_mtl.m). Only this exact
-@@ -120,6 +211,38 @@ def first_store(msl, local):
+@@ -120,6 +236,38 @@ def first_store(msl, local):
      rest = msl[at:]
      if not stores or len(stores) > 4 or re.search(r'if \(%s\)' % guard, rest): return msl, []
      return out + rest, stores
@@ -13527,7 +13866,7 @@ index a9fbb08d..541e0b60 100644
  # Compute shared memory past Metal's limit: Apple's GPUs give a kernel 32 KB of threadgroup memory (maxThreadgroupMemoryLength), and Metal refuses a pipeline that declares more, while Ampere
  # gives up to 100 KB. Mario Kart World's DrivePassShaderDefault has 168 compute shaders of 48 KB (spvUnsafeArray<uint, 12288>), seven of them run on the way to the first race; refused, their
  # dispatches were skipped. Such a kernel takes its threadgroup arrays from a device buffer the host binds (abi.TG_SLOT): one slice of the arrays' total per workgroup, at the workgroup's index in
-@@ -163,31 +286,37 @@ def tg_spill(msl):
+@@ -163,31 +311,37 @@ def tg_spill(msl):
          ln = re.sub(r'(?<!mem_device \| )mem_flags::mem_threadgroup\b', 'mem_flags::mem_device | mem_flags::mem_threadgroup', ln)
          lines[n] = ln
      return '\n'.join(lines), total
@@ -13590,7 +13929,7 @@ index a9fbb08d..541e0b60 100644
  # Border colours: Maxwell's sampler takes any RGBA border colour, Metal's only transparent black, opaque black or opaque white, and the host's sampler gets the nearest of them
  # (nvn_border.h). A filtered sample is linear in the border colour, r = Σ w·texel + w_border·B, so two samples through samplers that differ only in their border colour give the rest:
  # with Metal colours Bn (the sampler) and Bw (its twin), r = s_n + (s_w - s_n)·k, k = (B - Bn) / (Bw - Bn) per channel. Each sampler member a shader samples gets a twin member
-@@ -244,12 +373,21 @@ PRE_STATS = collections.Counter()
+@@ -244,12 +398,21 @@ PRE_STATS = collections.Counter()
  # Odyssey's alRenderMaterialUber took 25 minutes and 17.3 MB of GPU code, 31 s and 1.3 MB at -O1. Ordinary shaders come out within a few percent either way (the backend optimizes again)
  MAC_METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-O1', '-fpreserve-invariance']
  MAC_RECORD = ' '.join(MAC_METAL) + '; xcrun -sdk macosx metallib'
@@ -13617,7 +13956,7 @@ index a9fbb08d..541e0b60 100644
  # The NVN driver's constant segments have one layout in every game, which dm/gfx/nvn/dmsh_abi.h holds for the host and this build (through dmsh_abi.py); nvn_mtl.m fills them the same way at run time.
  #   c2 C2_TEX + 8 r: handles bound with nvnCommandBufferBindTexture (combined texture and sampler), slot r. The driver has 32 such slots, but a game may bind higher ones, whose words lie in the
  #     image table (Hades II binds slot 34, and no image), so a texture instruction's handle anywhere below the separate texture table names a combined slot. In the image
-@@ -310,6 +448,63 @@ def cache_meta_path(key): return f'index/{key}.json'
+@@ -310,6 +473,63 @@ def cache_meta_path(key): return f'index/{key}.json'
  def cache_path(digest): return f'shader/{digest}'
  CAS_USED = '_b_cas.txt'   # in the Mac library directory b-<V>/: the cache_path digests of its last full build, one per line
  
@@ -13681,7 +14020,7 @@ index a9fbb08d..541e0b60 100644
  def cache_outputs(key, digest, cached=False):
      root = cache_path(digest); files = {}
      for label, directory in (('mac', out), ('ios', IOSOUT)):
-@@ -342,10 +537,10 @@ def restore_cache(key, digest):
+@@ -342,10 +562,10 @@ def restore_cache(key, digest):
              elif not STORE.to_file(src, dst): return False
      return True
  
@@ -13694,7 +14033,7 @@ index a9fbb08d..541e0b60 100644
          old = json.loads(STORE.get(cache_meta_path(key)) or b'null')
          if old and old.get('code_fp') != code_fp: reason = 'code fingerprint changed: all rebuilt'
          elif old and old.get('rule_fp') != rule_fp: reason = 'rule changed'
-@@ -354,7 +549,7 @@ def cache_lookup(key, digest, rule_fp, code_fp):
+@@ -354,7 +574,7 @@ def cache_lookup(key, digest, rule_fp, code_fp):
  
  def publish_cache(key, digest, rule_fp, code_fp):
      # Paired pixel MSL is an input to vs_pad; a diagnostic build without it must not cache an incomplete vertex shader under a complete dependency key.
@@ -13703,7 +14042,7 @@ index a9fbb08d..541e0b60 100644
      found = cache_outputs(key, digest)
      if not found: return
      root, files = found
-@@ -363,91 +558,19 @@ def publish_cache(key, digest, rule_fp, code_fp):
+@@ -363,91 +583,19 @@ def publish_cache(key, digest, rule_fp, code_fp):
              for name in names:
                  src = os.path.join(out if label == 'mac' else IOSOUT, name)
                  if name.endswith('.json'):
@@ -13797,7 +14136,7 @@ index a9fbb08d..541e0b60 100644
  
  def pull_finish(key, full, refl):
      """The pulling library <key>_bp of a vertex shader with stage inputs (dmsh_pull.py: no [[stage_in]], the inputs read through the per-draw layout block), compiled through the
-@@ -508,28 +631,41 @@ def vin_finish(key, full, refl):
+@@ -508,28 +656,41 @@ def vin_finish(key, full, refl):
      VIN_STATS['inputs'] += len(shadows); VIN_STATS['float only'] += sum(1 for s in shadows if 'sint' not in s and 'uint' not in s)
      return refl
  
@@ -13854,7 +14193,7 @@ index a9fbb08d..541e0b60 100644
      return {}
  
  pc_of, loc = {}, {}
-@@ -582,6 +718,13 @@ def early_fragment_tests(ctl, code):
+@@ -582,6 +743,13 @@ def early_fragment_tests(ctl, code):
      is left as it is: tested early, the depth it computes would not be the one tested"""
      return len(ctl) > 0x718 and ctl[0x718] != 0 and len(code) >= 0x50 and not struct.unpack_from('<I', code, 19 * 4)[0] & 2
  
@@ -13868,7 +14207,7 @@ index a9fbb08d..541e0b60 100644
  def job_for(key, name, rec, w):
      ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]; stage = name[:2]
      extra = {}
-@@ -781,14 +924,16 @@ def const_sampler(name):
+@@ -781,14 +949,16 @@ def const_sampler(name):
  def decode_ubo_tex(name):
      """Bindless texture: the handle is written by the game into its own uniform buffer (fp_t_cb7_2A = c[7] word 0x2A). Returns (texture: (uniform slot, byte offset), sampler: (slot, offset));
      handle type 0 = combined handle (one 32-bit word: low 20 bits texture ID, high 12 bits sampler ID), 1 = the sampler handle is in another word (its slot is the high 16 bits of slots − 1). This game's whole library uses only type 0 (1850 shaders)
@@ -13888,7 +14227,7 @@ index a9fbb08d..541e0b60 100644
  
  def decode_ubo_img(name):
      """An image whose handle the game keeps in its own uniform buffer (<stage>_i_cb<n>_<word>_<format>: Unreal Engine 5.4 on the Switch 2 keeps every image in c[3]). Returns (uniform slot, byte offset)"""
-@@ -810,20 +955,35 @@ def c2_array(name, ty):
+@@ -810,20 +980,35 @@ def c2_array(name, ty):
  
  POOL_MIN = 33   # arrays at least this long are pools: Program.cs sizes Ryujinx's handle fallback by the pools, the vendored BindlessElimination keeps 32-entry slot arrays (NvnSlotArrayLength)
  
@@ -13929,7 +14268,7 @@ index a9fbb08d..541e0b60 100644
          return f'{m.group(1)}constant spvPool_{m.group(4)}* {m.group(4)} [[id('
      members = re.sub(r'^(\s*)array<(.+), (\d+)> (\w+) \[\[id\(', to_pointer, body.group(1), flags=re.M)
      if not pools: return src
-@@ -835,7 +995,9 @@ def pool_arrays(src):
+@@ -835,7 +1020,9 @@ def pool_arrays(src):
          aid += int(a.group(1)) if a else 1
          return out
      members = re.sub(r'^(\s*)(.+?)\s+(\w+)\s*\[\[id\((\d+)\)((?:\s*,\s*\w+\(\d+\))*)\]\];', renumber, members, flags=re.M)
@@ -13940,7 +14279,7 @@ index a9fbb08d..541e0b60 100644
      i = body.start()
      src = src[:i] + structs + src[i:body.start(1)] + members + src[body.end(1):]
      for nm in pools:   # base.name[index] → (&base.name->e[0])[min(uint(index), base.name->n)], the index taken with its brackets balanced
-@@ -847,10 +1009,18 @@ def pool_arrays(src):
+@@ -847,10 +1034,18 @@ def pool_arrays(src):
                  if j >= len(src): raise ValueError(f'{nm}: unbalanced index')
                  depth += {'[': 1, ']': -1}.get(src[j], 0); j += 1
              base = f'{m.group(1)}.{nm}'
@@ -13961,7 +14300,7 @@ index a9fbb08d..541e0b60 100644
      return src
  
  def reflect(key, stage, msl, res):
-@@ -865,11 +1035,14 @@ def reflect(key, stage, msl, res):
+@@ -865,11 +1060,14 @@ def reflect(key, stage, msl, res):
      for m in members:
          ty, nm, aid = m.group(1).strip(), m.group(2), int(m.group(3))
          e = {'msl_name': nm, 'msl_type': ty, 'arg_id': aid}
@@ -13977,7 +14316,7 @@ index a9fbb08d..541e0b60 100644
          elif pool: e.update(kind=abi.KIND_SAMP_POOL if pool.group(1) == 'sampler' else abi.KIND_TEX_POOL, elem=pool.group(1))   # see pool_arrays
          elif nm == 'support_buffer': e.update(kind=abi.KIND_SUPPORT)
          elif re.fullmatch(r'[a-z]+_c(\d+)', nm):
-@@ -879,8 +1052,9 @@ def reflect(key, stage, msl, res):
+@@ -879,8 +1077,9 @@ def reflect(key, stage, msl, res):
              e.update(kind=abi.KIND_SBUF, index=int(re.fullmatch(r'[a-z]+_s(\d+)', nm).group(1)))
          elif decode_ubo_tex(nm[:-5] if nm.endswith('Smplr') else nm):   # bindless: the handle is in a uniform buffer (reg = uniform slot, off = byte offset)
              ut, us = decode_ubo_tex(nm[:-5] if nm.endswith('Smplr') else nm)
@@ -13989,7 +14328,7 @@ index a9fbb08d..541e0b60 100644
              elif 'texture_buffer' in ty: e.update(kind=abi.KIND_TBUF_UBO, reg=ut[0], off=ut[1])
              else: e.update(kind=abi.KIND_TEX_UBO, reg=ut[0], off=ut[1], **({'soff': us[1], 'sreg': us[0]} if other else {}))
          elif decode_ubo_img(nm):
-@@ -955,9 +1129,10 @@ def unfillable(dr, stage):
+@@ -955,9 +1154,10 @@ def unfillable(dr, stage):
  RULES = []   # MSL rewrite rules attached by shader name (function, applicability test); the former dark-range remap toe has been removed (back to the original Switch brightness)
  # CODE_FP hashes the code form of this file and its helper modules (dmsh_chain.code_form): editing a comment, a docstring or the layout does not change any shader's key.
  # The library ABI enters as its values (dmsh_abi.VALUES), so a comment in dmsh_abi.h does not change a key either.
@@ -14003,7 +14342,7 @@ index a9fbb08d..541e0b60 100644
                           + b'\0' + inspect.getsource(dmsh_fetch.screen_varyings).encode()
                           + b'\0abi\0' + repr(sorted(abi.VALUES.items())).encode()).hexdigest()
  TOOL_FP = tool_fingerprint().encode()
-@@ -1009,17 +1184,35 @@ def build_keys(want, locations, pairs):
+@@ -1009,17 +1209,35 @@ def build_keys(want, locations, pairs):
      """A partial vertex build needs its available paired pixel shaders before padding; a full build keeps every shader."""
      return sorted(set(want) | {ps for vs in want for ps in pairs.get(vs, ()) if ps in locations}) if want else sorted(locations)
  
@@ -14045,7 +14384,7 @@ index a9fbb08d..541e0b60 100644
      i = src.find('struct main0_out\n{\n'); j = src.find('\n};', i); k = src.find('main0_out out = {};')
      if not miss or i < 0 or j < 0 or k < 0: return src, []
      src = src[:j] + ''.join(f'\n    float4 dm_pad{l} [[user(locn{l})]];' for l in miss) + src[j:]
-@@ -1185,7 +1378,7 @@ def fs_uint(src):
+@@ -1185,7 +1403,7 @@ def fs_uint(src):
      A G-buffer may mix the two: Pokémon Sword's scene shaders write colour 0 and 2 as floats and colour 1 from integer bits into an RGBA16Uint target. A shader whose outputs include both
      gets a third entry point, main0_m, that returns only the outputs written from integer bits as unsigned integers (their colour indices: the mask); the host takes it for a pipeline whose
      integer attachments are exactly those; which outputs those are comes from how their values are computed (int_outputs), as nearly every float output is written as integer bits too.
@@ -14054,7 +14393,7 @@ index a9fbb08d..541e0b60 100644
      m = re.search(r'^.*\bfragment\s+main0_out\s+main0\s*\(', src, re.M); st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
      if not m or not st: return None, 0
      mem = re.findall(r'^\s*(\w+)\s+(\w+)\s*(\[\[[^\]]*\]\])?;', st.group(1), re.M)
-@@ -1205,11 +1398,14 @@ def fs_uint(src):
+@@ -1205,11 +1423,14 @@ def fs_uint(src):
      ints = int_outputs(src, body, cols)
      if not from_int and not ints and not (writes and (all(re.fullmatch(r'-?[0-9.]+f?|float\d\([-0-9., ]*\)', w.strip()) for w in writes) or all(passed(w) for w in writes))): return None, 0
      uty = lambda ty: 'u' + ty.replace('float', 'int')   # float4 → uint4, float → uint
@@ -14073,7 +14412,7 @@ index a9fbb08d..541e0b60 100644
      as_int = ints or from_int
      if as_int and set(cols) - as_int:   # some outputs from integer bits, some not: the mixed entry point
          out += entry('m', as_int)
-@@ -1221,14 +1417,17 @@ def fs_dual(src):
+@@ -1221,14 +1442,17 @@ def fs_dual(src):
      output [[color(1)]]; Metal reads the second source only from [[color(0), index(1)]], and its compiler crashes building a pipeline that blends with an absent one (Pokémon Legends:
      Arceus's ha_post_effects, f4f36a03b0c6691d). A shader in the profile's dual_want.tsv that writes exactly colours 0 and 1 gets a second entry point, main0_d, the same body with
      output 1 as index 1 of colour 0; the host takes it for a pipeline whose target 0 blends with a SRC1 factor (nvn_mtl.m pso_desc). Not every such shader gets one: most write a
@@ -14096,10 +14435,11 @@ index a9fbb08d..541e0b60 100644
  
  SG_OPS = {333: 'true', 334: 'pred', 335: 'pred', 336: 'true', 337: 'value', 338: 'value', 339: 'ballot', 345: 'value', 346: 'value', 347: 'value', 348: 'value'}   # OpGroupNonUniform* → its one-lane value
  SG_BUILTINS = {36: 'one', 41: 'zero', 4416: 'one4', 4417: 'one4', 4418: 'zero4', 4419: 'one4', 4420: 'zero4'}   # SubgroupSize, SubgroupLocalInvocationId, Eq / Ge / Gt / Le / Lt masks
-@@ -1381,8 +1580,12 @@ def finish(key, w, j, c1):
+@@ -1381,8 +1605,13 @@ def finish(key, w, j, c1):
      try: src = dmsh_atomic.check_msl(src)
      except ValueError as e: return 'image atomic MSL failed', str(e), None
      src = precise(src)   # min / max / clamp with Maxwell's NaN results (see precise)
++    if j['stage'] == 'ps': src = frag_z(src)   # position.z against the depth the same surface stored (see frag_z)
 +    try: src = gather_offsets(src)   # four gathers instead of a wrapper's loop over their offsets (see gather_offsets)
 +    except ValueError as e: return 'gather offsets rewrite failed', str(e)[:160], None
      try: src = hmma_msl(src)   # Ampere HMMA through simdgroup_matrix (see hmma_msl)
@@ -14109,7 +14449,7 @@ index a9fbb08d..541e0b60 100644
      try: src = pool_arrays(src)   # handles traced to no slot read the pools the replay keeps (see pool_arrays)
      except ValueError as e: return 'pool rewrite failed', str(e)[:160], None
      src = dmsh_wide.wide_loads(src)   # storage words the translator split, read whole again (see dmsh_wide.py)
-@@ -1391,7 +1594,8 @@ def finish(key, w, j, c1):
+@@ -1391,7 +1620,8 @@ def finish(key, w, j, c1):
      mesh = j.get('mesh_stage')
      if mesh:   # the kernel as the Metal object or mesh function (dmsh_meshstage.py)
          if mesh.get('refused'): return 'mesh stage failed', mesh['refused'], None
@@ -14119,7 +14459,7 @@ index a9fbb08d..541e0b60 100644
          except ValueError as e: return 'mesh stage failed', str(e)[:160], None
      elif j['stage'] == 'cs':
          src, first = first_store(src, j.get('local')); open(msl, 'w').write(src)   # the first invocation's store, for the host (see first_store)
-@@ -1418,10 +1622,14 @@ def finish(key, w, j, c1):
+@@ -1418,10 +1648,14 @@ def finish(key, w, j, c1):
          open(msl, 'w').write(full)
      fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
      fd = fs_dual(src) if j['stage'] == 'ps' and key in DUAL_WANT else None   # the dual-source entry point (see fs_dual), from the source with only main0
@@ -14136,7 +14476,7 @@ index a9fbb08d..541e0b60 100644
          if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
          if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
      try: compile_targets()
-@@ -1434,8 +1642,6 @@ def finish(key, w, j, c1):
+@@ -1434,8 +1668,6 @@ def finish(key, w, j, c1):
      clone(msl, os.path.join(out, key + '_b.metal'))
      entry = re.search(r'(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(', src)
      dr = drv_reads(src)
@@ -14145,7 +14485,7 @@ index a9fbb08d..541e0b60 100644
      refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': mesh['kind'] if mesh else j['stage'],
              **({'mesh_stage': {'kind': mesh['kind'], 'threads': mesh['threads'], 'payload': mesh['payload'], 'task': mesh.get('task', True)}, **({'entry_z': 'main0_z'} if mesh['kind'] == 'ms' else {})} if mesh else {}),
              'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
-@@ -1447,41 +1653,84 @@ def finish(key, w, j, c1):
+@@ -1447,41 +1679,84 @@ def finish(key, w, j, c1):
              'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr, mesh['kind'] if mesh else j['stage']),
              'bindings': binds,
              'vertex_inputs': [{'location': int(m.group(3)), 'msl_type': m.group(1)} for m in attributes(src)],
@@ -14245,7 +14585,7 @@ index a9fbb08d..541e0b60 100644
      fd, offs = packs[name]
      return name, os.pread(fd, offs[k + 1] - offs[k], offs[k])
  for key in keys: digests[key] = shader_key(key, *rec_of(key))
-@@ -1490,45 +1739,78 @@ def plain_digest(k):   # a paired pixel shader's key, also when it is not built
+@@ -1490,45 +1765,78 @@ def plain_digest(k):   # a paired pixel shader's key, also when it is not built
      return shader_key(k, *rec_of(k)) if k in loc else 'missing'
  for key in keys:
      if PAIRS.get(key): digests[key] = pair_keyed(digests[key], [plain_digest(p) for p in sorted(PAIRS[key])])
@@ -14350,7 +14690,7 @@ index a9fbb08d..541e0b60 100644
      except ValueError as e: MESH_STATS['not composed'] += 1; print(f'[RED] mesh {vk} {gk}: {e}', flush=True); return
      path = os.path.join(w, f'{vk}_{gk}_m3.metal'); open(path, 'w').write(msl)
      try:
-@@ -1536,6 +1818,10 @@ def mesh_finish(pair):
+@@ -1536,6 +1844,10 @@ def mesh_finish(pair):
          if IOSOUT: MTL.compile('ios', path, libs[1])
          MESH_STATS['built'] += 1
      except subprocess.CalledProcessError as e: MESH_STATS['failed to compile'] += 1; print(f'[RED] mesh {vk} {gk}: does not compile ({str(e)[:120]})', flush=True)
@@ -14361,7 +14701,7 @@ index a9fbb08d..541e0b60 100644
  _mesh = GAME.table('geo_mesh.tsv')
  if _mesh.exists():
      with cf.ThreadPoolExecutor(NJ) as ex: list(ex.map(mesh_finish, [tuple(ln.split()[:2]) for ln in _mesh.read_text().splitlines() if ln.strip() and not ln.startswith('#')]))
-@@ -1545,7 +1831,7 @@ print(f'shaders {len(res)}: ok {st["ok"]}, ' + ', '.join(f'{k} {v}' for k, v in
+@@ -1545,7 +1857,7 @@ print(f'shaders {len(res)}: ok {st["ok"]}, ' + ', '.join(f'{k} {v}' for k, v in
  print(f'shader cache: hit {PRE_STATS["hit"]}, rebuilt {PRE_STATS["miss"]}')
  for reason in ('new key', 'rule changed', 'code fingerprint changed: all rebuilt'):
      if PRE_STATS[reason]: print(f'  {reason} {PRE_STATS[reason]}')
@@ -14370,7 +14710,7 @@ index a9fbb08d..541e0b60 100644
  print(f'shadow-input libraries (<key>_bv, dmsh_vin.py): {VIN_STATS["generated"]} generated, {VIN_STATS["failed"]} failed to compile, {VIN_STATS["not generated"]} not generated; '
        f'{VIN_STATS["inputs"]} integer inputs shadowed, {VIN_STATS["float only"]} of them with no other-sign shadow (attribute indices ran out)')
  print(f'alpha test and logic operation libraries (<key>_bx, dmsh_side.py): {SIDE_STATS["generated"]} generated, {SIDE_STATS["failed"]} failed to compile, {SIDE_STATS["not generated"]} pixel shaders without either')
-@@ -1580,6 +1866,13 @@ if not want:   # a full build: the stamp, then the c1 guard and uniform read ext
+@@ -1580,6 +1892,13 @@ if not want:   # a full build: the stamp, then the c1 guard and uniform read ext
      os.replace(os.path.join(out, CAS_USED + '.tmp'), os.path.join(out, CAS_USED))
      for _d in [out] + ([IOSOUT] if IOSOUT else []): dmsh_chain.write_stamp(_d, GAME.id, INPUTS)
      print(f'library stamp: game {GAME.id}, inputs {INPUTS}', flush=True)
@@ -18255,10 +18595,111 @@ index 4069ab83..427795fb 100644
          int64_t need = alias_unmapped(off, size) * 4096;
          // Profile mem_map_limit: a map that would take the process past the application pool fails with ResultLimitReached, as on Horizon (the pool less the used memory GetInfo reports).
 diff --git a/dm/host/hle_thread.c b/dm/host/hle_thread.c
-index 38e94d4e..544b34c3 100644
+index 38e94d4e..c734ae71 100644
 --- a/dm/host/hle_thread.c
 +++ b/dm/host/hle_thread.c
-@@ -909,6 +909,13 @@ void dm_guest_sleep_ns(int64_t ns) {
+@@ -23,6 +23,7 @@
+ 
+ #define R_TIMEOUT     0xEA01u   // Kernel module 1, description 117
+ #define R_CANCELLED   0xEC01u   // 118
++#define R_OUT_OF_RANGE 0xEE01u  // 119
+ #define R_BAD_HANDLE  0xE401u   // 114
+ #define R_BAD_STATE   0xFA01u   // 125
+ #define R_OUT_OF_RES  0xCE01u   // 103
+@@ -30,6 +31,8 @@
+ #define H_CUR_THREAD  0xFFFF8000u
+ 
+ enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W };
++enum { MAX_SYNC_OBJECTS = 64 };
++typedef struct { void *obj; int type; } sync_ref_t;
+ // Service-layer SystemEvent bindings (see hle_bind_system_event): guest SystemEventType address → the write-end handle of its kernel event.
+ // An entry lives as long as that handle: CloseHandle on it removes the entry (se_unbind), so a SystemEvent destroyed and created again at the same address gets a new kernel event.
+ // Entries used to stay forever: the second bind returned early, the new event was never created and signals went to the closed handle (or to whatever event reused its number).
+@@ -68,7 +71,7 @@ typedef struct thr {
+     struct thr *next;          // Wait chain
+     struct thr *all;           // All-threads chain (for the state dump)
+     int last_svc; uint64_t last_lr;
+-    int closed;                // Handle closed: the object is freed only when this holds together with exited (Horizon: the thread object goes away with the last reference)
++    int closed, sync_refs;      // Reclaim only after handle close, thread exit and the final synchronization wait reference
+     uint64_t nsvc;             // SVC count (for the state dump)
+     uint64_t nyield, nyield_seen, nbackoff, nbackoff_seen;   // Yields (SleepThread 0/-1/-2) and those the back-off turned into short sleeps, with both counts at the last power report (dm_yield_top)
+     uint64_t nspin, nspin_seen, spin_site; const char *spin_mod;   // Spin wait passes (dm_spin_wait; those that yield count in nyield too) and where the last one was
+@@ -85,7 +88,7 @@ typedef struct thr {
+     // SVC exit without G: bit 0 = inside an SVC, bit 1 = a pause was requested. The exit clears bit 0 with one compare-and-swap when bit 1 is clear, and takes G only otherwise;
+     // the requester sets bit 1 and treats the thread as stopped only if bit 0 was set, so a thread it counts as stopped in an SVC cannot leave the SVC without G (svc_regs stays valid for GetThreadContext3)
+     _Atomic int svc_state;
+-    const uint32_t *whs; int whn;   // WaitSynchronization's handle array (guest memory, valid while the thread waits there): a signal wakes only waiters that hold the signalled object
++    sync_ref_t wobjs[MAX_SYNC_OBJECTS]; int wn, widx;   // WaitSynchronization's retained objects (the first wn) and the index the completing signal recorded, independent of handle reuse and guest memory (Horizon: KThread's sync object buffer)
+     int ctx_ok; uint64_t ctx_x[29], ctx_fp, ctx_lr, ctx_sp, ctx_pc; uint32_t ctx_pstate, ctx_fpcr, ctx_fpsr; __uint128_t ctx_v[32];
+     pthread_cond_t pcv;
+ } thr_t;
+@@ -371,9 +374,9 @@ static void thread_exit(thr_t *t) {
+     // No logging here: the exit happens on the guest thread's own stack (some are only a dozen or so KiB), and a printf with floating point would blow the stack (real-device smoke test: SIGBUS when LibcurlResolver exits, backtrace fprintf → __dtoa). Only the time is recorded, and it is printed later in the state dump
+     pthread_mutex_lock(&G);
+     t->exited = 1;
+-    wake_sync_waiters(t);   // Synchronization waiters on this thread re-check
++    wake_sync_waiters(t);   // Complete synchronization waits on this thread
+     pthread_setspecific(g_keythr, NULL);
+-    if (t->closed) thr_free(t);
++    if (t->closed && !t->sync_refs) thr_free(t);
+     pthread_mutex_unlock(&G);
+     pthread_exit(NULL);
+ }
+@@ -564,27 +567,39 @@ uint32_t dm_guest_work_qos(unsigned *count) {
+ }
+ 
+ // ---------- Synchronization objects ----------
+-static int sig_obj(uint32_t h, int *bad) {    // 1 = signaled (holding G)
++// Resolve and retain the whole list before checking readiness. A handle close
++// cannot destroy an object or redirect an existing wait to a reused slot.
++static int sync_open(uint32_t h, sync_ref_t *ref) {   // holding G; no pseudo-handles
+     unsigned i = h - 0x1000;
+-    if (h == H_CUR_THREAD) return 0;
+-    if (i == 0 || i >= MAX_H) { *bad = 1; return 0; }
+-    switch (g_h[i].type) {
+-    case O_THREAD: return ((thr_t *)g_h[i].obj)->exited;
+-    case O_EVENT_R: return ((event_t *)g_h[i].obj)->signaled;
+-    default: *bad = 1; return 0;
++    if (i == 0 || i >= MAX_H) return 0;
++    if (g_h[i].type == O_THREAD) ((thr_t *)g_h[i].obj)->sync_refs++;
++    else if (g_h[i].type == O_EVENT_R) ((event_t *)g_h[i].obj)->refs++;
++    else return 0;
++    *ref = (sync_ref_t){g_h[i].obj, g_h[i].type};
++    return 1;
++}
++static void sync_close(sync_ref_t ref) {   // holding G
++    if (ref.type == O_THREAD) {
++        thr_t *t = ref.obj;
++        if (!--t->sync_refs && t->closed && t->exited) thr_free(t);
++    } else {
++        event_t *e = ref.obj;
++        if (!--e->refs) free(e);
+     }
+ }
+-// A synchronization object became signaled (an event, or a thread that exited): wake the WaitSynchronization waiters whose handle set holds it, so they re-check (holding G).
+-// It used to wake every such waiter on every signal; each then re-checked its handles and went back to sleep, a wake-up per waiting thread per signal
++static int sync_signaled(sync_ref_t ref) {   // holding G
++    return ref.type == O_THREAD ? ((thr_t *)ref.obj)->exited : ((event_t *)ref.obj)->signaled;
++}
++// Complete each registered wait under G: a clear before the waiter resumes
++// must not erase the notification that already made it runnable.
+ static void wake_sync_waiters(const void *obj) {
+     for (thr_t *w = g_wait; w; ) { thr_t *n = w->next;
+-        if (w->wkind == 4) { int hit = !w->whs;
+-            for (int i = 0; i < w->whn && !hit; i++) { unsigned k = w->whs[i] - 0x1000; hit = k > 0 && k < MAX_H && g_h[k].obj == obj; }
+-            if (hit) wake(w, -1); }
++        if (w->wkind == 4)
++            for (int i = 0; i < w->wn; i++) if (w->wobjs[i].obj == obj) {
++                w->widx = i; wake(w, 0); break;
++            }
+         w = n; }
+ }
+-
+-static int64_t now_mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000000000ll + ts.tv_nsec; }
+ void dm_guest_clock_advanced(void) {
+     if (!dm_detclock_enabled()) return;
+     pthread_mutex_lock(&G);
+@@ -909,6 +924,13 @@ void dm_guest_sleep_ns(int64_t ns) {
      sleep_precise(now_ns() + (uint64_t)ns);
      if (me) me->sleeping = 0;
  }
@@ -18272,6 +18713,81 @@ index 38e94d4e..544b34c3 100644
  int svc_thread(int num, uint64_t *regs) {
      int r = svc_thread_impl(num, regs);
      thr_t *me = pthread_getspecific(g_keythr);
+@@ -1117,8 +1139,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
+         event_t *e = num == 0x11 ? h_peek(h, O_EVENT_W) : num == 0x17 ? h_peek(h, O_EVENT_R)
+                    : (h_peek(h, O_EVENT_W) ? h_peek(h, O_EVENT_W) : h_peek(h, O_EVENT_R));
+         int64_t r = 0;
+-        if (!e) { r = (num == 0x17 && h_peek(h, O_THREAD)) ? R_BAD_STATE : R_BAD_HANDLE;
+-                  if (r == R_BAD_HANDLE) LOG("event SVC %#x invalid handle %#x", num, h); }
++        if (!e) { r = R_BAD_HANDLE; LOG("event SVC %#x invalid handle %#x", num, h); }
+         else if (num == 0x11) { e->signaled = 1; wake_sync_waiters(e); }
+         else if (num == 0x17 && !e->signaled) r = R_BAD_STATE;
+         else e->signaled = 0;
+@@ -1126,33 +1147,39 @@ static int svc_thread_impl(int num, uint64_t *regs) {
+         regs[0] = (uint64_t)r; return 1;
+     }
+     case 0x18: {  // WaitSynchronization(→w1 index; x1 handle array, w2 count, x3 timeout)
+-        thr_t *t = cur(); const uint32_t *hs = (const uint32_t *)regs[1]; int n = (int)regs[2]; int64_t ns = poll_wait_begin((int64_t)regs[3]);
+-        int64_t deadline = ns > 0 ? (dm_detclock_enabled() ? (int64_t)guest_ns() : now_mono_ns()) + ns : 0;
++        thr_t *t = cur(); int n = (int)regs[2]; int64_t ns = (int64_t)regs[3];
++        if (n < 0 || n > MAX_SYNC_OBJECTS) { regs[0] = R_OUT_OF_RANGE; regs[1] = 0; return 1; }
++        int64_t wait_ns = poll_wait_begin(ns);
++        uint32_t hs[MAX_SYNC_OBJECTS]; sync_ref_t *objects = t->wobjs;
++        if (n) memcpy(hs, (const void *)regs[1], n * sizeof *hs);
+         pthread_mutex_lock(&G);
+-        int64_t r; int idx = -1;
+-        for (;;) {
+-            if (t->cancel) { t->cancel = 0; r = R_CANCELLED; break; }
+-            int bad = 0;
+-            for (int i = 0; i < n && idx < 0; i++) if (sig_obj(hs[i], &bad)) idx = i;
+-            if (bad) { r = R_BAD_HANDLE; break; }
+-            if (idx >= 0) { r = 0; break; }
+-            int64_t left = ns < 0 ? -1 : ns == 0 ? 0 : deadline - (dm_detclock_enabled() ? (int64_t)guest_ns() : now_mono_ns());
+-            if (ns > 0 && left <= 0) { r = R_TIMEOUT; break; }
+-            t->whs = hs; t->whn = n; int64_t br = block(t, 4, left); t->whs = NULL; t->whn = 0;
+-            if (br == R_TIMEOUT) { r = R_TIMEOUT; break; }
++        int held = 0, idx = -1; int64_t r = R_BAD_HANDLE;
++        while (held < n && sync_open(hs[held], &objects[held])) held++;
++        if (held == n) {
++            for (int i = 0; i < n; i++) if (sync_signaled(objects[i])) { idx = i; break; }
++            // Ready objects, then a zero-time poll, precede pending cancellation.
++            if (idx >= 0) r = 0;
++            else if (!ns) r = R_TIMEOUT;
++            else if (t->cancel) { t->cancel = 0; r = R_CANCELLED; }
++            else {
++                t->wn = n; t->widx = -1;
++                r = block(t, 4, wait_ns); idx = t->widx;
++                t->wn = 0;
++            }
+         }
++        for (int i = 0; i < held; i++) sync_close(objects[i]);
+         pthread_mutex_unlock(&G);
+-        poll_wait_end((int64_t)regs[3], r);
++        poll_wait_end(ns, r);
+         regs[0] = (uint64_t)r; regs[1] = idx >= 0 ? (uint64_t)idx : 0; return 1;
+     }
+     case 0x19: {  // CancelSynchronization(w0 thread)
+         pthread_mutex_lock(&G);
+         thr_t *t = h_get((uint32_t)regs[0], O_THREAD);
+-        if (t) { t->cancel = 1; if (t->wkind == 4) wake(t, -1); }
++        if (t) { if (t->wkind == 4) wake(t, R_CANCELLED); else t->cancel = 1; }
+         pthread_mutex_unlock(&G);
+         regs[0] = t ? 0 : R_BAD_HANDLE; return 1;
+     }
+-    case 0x16: {  // CloseHandle(w0): an event is freed only when both ends are closed; after a thread handle is closed the slot is recycled, and the object is freed once the thread has also exited
++    case 0x16: {  // CloseHandle(w0): recycle the slot; synchronization waits retain their original objects
+         pthread_mutex_lock(&G);
+         unsigned i = (uint32_t)regs[0] - 0x1000;
+         if (i > 0 && i < MAX_H && (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W)) {
+@@ -1163,7 +1190,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
+             thr_t *t = g_h[i].obj;
+             g_h[i].type = O_FREE; g_h[i].obj = NULL;
+             t->closed = 1;
+-            if (t->exited) thr_free(t);
++            if (t->exited && !t->sync_refs) thr_free(t);
+         }
+         pthread_mutex_unlock(&G);
+         regs[0] = 0; return 1;
 diff --git a/dm/host/hle_time.c b/dm/host/hle_time.c
 index f88d64b7..0cd0e180 100644
 --- a/dm/host/hle_time.c
@@ -18848,7 +19364,7 @@ index b6dc4c46..b2804f6b 100644
      if (e) {
          char spec[512]; strlcpy(spec, e, sizeof spec);
 diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
-index b3ee5431..07ff84f7 100644
+index b3ee5431..ebaa8244 100644
 --- a/dm/host/tests/Makefile
 +++ b/dm/host/tests/Makefile
 @@ -12,7 +12,7 @@ QUIET = $(if $(findstring -fsanitize,$(SAN)),,2>/dev/null)
@@ -18860,15 +19376,18 @@ index b3ee5431..07ff84f7 100644
  	$(B)/t_language
  	$(B)/t_heap_size
  	$(B)/t_touch
-@@ -42,6 +42,7 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
+@@ -42,8 +42,10 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
  	$(B)/t_preempt
  	$(B)/t_preempt --all-peers
  	$(B)/t_pctl
 +	$(B)/t_net_eventfd
  	$(B)/t_sf
  	$(B)/t_time
++	$(B)/t_sync_wait
  	$(B)/t_shared_font
-@@ -53,16 +54,19 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
+ 	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
+ 	$(B)/t_system_event
+@@ -53,16 +55,19 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
  	$(B)/t_codec_video
  	$(B)/t_movie_avc
  	$(B)/t_nv
@@ -18888,7 +19407,20 @@ index b3ee5431..07ff84f7 100644
  	$(B)/t_input_map
  	$(B)/t_launcher_contract
  	$(B)/t_haptics
-@@ -189,12 +193,19 @@ watch-sample: $(B)/t_watch_sample
+@@ -74,6 +79,12 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
+ 	$(B)/t_pad_motion
+ 	$(B)/t_controllers_mac
+ run: $(B)/t_nro
++run: $(B)/t_sync_wait
++$(B)/t_sync_wait: t_sync_wait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
++	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_sync_wait.c t_condvar_stub.c
++sync-wait: $(B)/t_sync_wait
++	$(B)/t_sync_wait
++.PHONY: sync-wait
+ run: $(B)/t_symbols
+ $(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
+ 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c ../hle_profile.c
+@@ -189,12 +200,19 @@ watch-sample: $(B)/t_watch_sample
  	$(B)/t_watch_sample
  $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_altstack.c t_altstack_stub.c ../crash.c
@@ -18908,7 +19440,7 @@ index b3ee5431..07ff84f7 100644
  run: $(B)/t_nv
  $(B)/t_nv: t_nv.c ../../gfx/hle_nv.c ../hle.h ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_nv.c
-@@ -220,6 +231,9 @@ $(B)/t_home_quit: t_home_quit.c ../home_quit.h | $(B)
+@@ -220,6 +238,9 @@ $(B)/t_home_quit: t_home_quit.c ../home_quit.h | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -I.. -o $@ t_home_quit.c
  $(B)/t_home_quit_mac: t_home_quit_mac.m ../home_quit_mac.h | $(B)
  	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -Wno-unused-function -I.. -o $@ t_home_quit_mac.m -framework Cocoa -framework QuartzCore
@@ -18918,7 +19450,7 @@ index b3ee5431..07ff84f7 100644
  run: $(B)/t_motion_pro $(B)/t_motion_pro_mac
  $(B)/t_motion_pro: t_motion_pro.c ../motion_pro.h | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -fsanitize=address,undefined -o $@ t_motion_pro.c
-@@ -315,7 +329,15 @@ memory-dirty: $(B)/t_svc_memory_dirty
+@@ -315,7 +336,15 @@ memory-dirty: $(B)/t_svc_memory_dirty
  	$(B)/t_svc_memory_dirty
  memory-profile: $(B)/t_svc_memory
  	DM_TEST_BUILD=$(B) $(PYTHON) test_memory_profile.py
@@ -18935,7 +19467,21 @@ index b3ee5431..07ff84f7 100644
  
  # A native blocking notification wait must release the thread's guest core.
  $(B)/t_notify_sched: t_notify_sched.c t_condvar_stub.c ../hle_thread.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
-@@ -358,6 +380,9 @@ tsan-threads-run: $(addprefix $(B)/,$(TSAN_T))
+@@ -333,7 +362,7 @@ include ../../sanitizers/sanitizers.mk
+ asan:
+ 	@$(call san_fresh,$(B)/asan,$(ASAN_FLAGS))
+ 	$(ASAN_ENV) $(MAKE) B=$(B)/asan SAN="$(ASAN_FLAGS)" run
+-TSAN_T = t_audio t_audio_stats t_audio_device t_thread_leak t_oe t_fs_commit_list t_fs_case t_save_sync t_condvar t_condvar_old t_preempt t_system_event t_notify_sched t_altstack
++TSAN_T = t_audio t_audio_stats t_audio_device t_thread_leak t_oe t_fs_commit_list t_fs_case t_save_sync t_condvar t_condvar_old t_preempt t_system_event t_notify_sched t_altstack t_sync_wait
+ tsan-threads:
+ 	@$(call san_fresh,$(B)/tsan,$(TSAN_FLAGS))
+ 	$(TSAN_ENV) $(MAKE) B=$(B)/tsan SAN="$(TSAN_FLAGS)" tsan-threads-run
+@@ -354,10 +383,14 @@ tsan-threads-run: $(addprefix $(B)/,$(TSAN_T))
+ 	$(B)/t_notify_sched
+ 	$(B)/t_notify_sched --all-peers
+ 	$(B)/t_altstack
++	$(B)/t_sync_wait
+ 	DM_QOS_MAP=1 $(B)/t_notify_sched
  	DM_QOS_MAP=1 $(B)/t_notify_sched --all-peers
  $(B)/t_pad_hid: t_pad_hid.c ../pad_hid.h ../pad_joycon.h ../motion_pro.h ../dm_input.h | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_pad_hid.c
@@ -19884,6 +20430,205 @@ index 6ccace4d..7aa8dd1d 100644
  #undef getsectiondata
  
  struct dm_flags g_flag;
+diff --git a/dm/host/tests/t_sync_wait.c b/dm/host/tests/t_sync_wait.c
+new file mode 100644
+index 00000000..d2ff0812
+--- /dev/null
++++ b/dm/host/tests/t_sync_wait.c
+@@ -0,0 +1,193 @@
++// WaitSynchronization through real SVCs. Hold G across notification and clear
++// to make the lost-notification window deterministic, without scheduler sleeps.
++#include "../hle_thread.c"
++#include <assert.h>
++#include <unistd.h>
++
++typedef struct { uint32_t write, read; } ends_t;
++typedef struct {
++    thr_t *thread;
++    pthread_t pt;
++    uint32_t handles[3];
++    int count;
++    uint64_t result, index;
++} waiter_t;
++
++static ends_t event_new(void) {
++    uint64_t r[32] = {0}; assert(svc_thread(0x45, r) && !r[0]);
++    return (ends_t){r[1], r[2]};
++}
++static void close_handle(uint32_t h) {
++    uint64_t r[32] = {h}; assert(svc_thread(0x16, r) && !r[0]);
++}
++static void event_close(ends_t e) { close_handle(e.write); close_handle(e.read); }
++static uint64_t wait_now(uint32_t *handles, int n, int64_t timeout, uint64_t *index) {
++    uint64_t r[32] = {0, (uint64_t)handles, (uint32_t)n, (uint64_t)timeout};
++    assert(svc_thread(0x18, r)); if (index) *index = r[1]; return r[0];
++}
++static thr_t *new_thread(void) {
++    thr_t *t = calloc(1, sizeof *t); assert(t);
++    pthread_cond_init(&t->cv, NULL); pthread_cond_init(&t->pcv, NULL);
++    t->started = 1; t->prio = 44; t->mask = 7;
++    pthread_mutex_lock(&G);
++    t->handle = h_new(O_THREAD, t); t->all = g_all; g_all = t;
++    pthread_mutex_unlock(&G);
++    return t;
++}
++static void *wait_body(void *arg) {
++    waiter_t *w = arg;
++    pthread_setspecific(g_keythr, w->thread);
++    w->result = wait_now(w->handles, w->count, 500000000, &w->index);
++    thread_exit(w->thread);
++    return NULL;
++}
++static void wait_start(waiter_t *w) {
++    w->thread = new_thread();
++    assert(!pthread_create(&w->pt, NULL, wait_body, w));
++    uint64_t deadline = now_ns() + 2000000000;
++    for (;;) {
++        pthread_mutex_lock(&G); int waiting = w->thread->wkind == 4; pthread_mutex_unlock(&G);
++        if (waiting) return;
++        assert(now_ns() < deadline); sched_yield();
++    }
++}
++static void wait_finish(waiter_t *w, uint64_t result, unsigned index) {
++    assert(!pthread_join(w->pt, NULL));
++    if (w->result != result || (!result && w->index != index))
++        fprintf(stderr, "wait returned %#llx / %llu; expected %#llx / %u\n", w->result, w->index, result, index);
++    assert(w->result == result && (result || w->index == index));
++    close_handle(w->thread->handle);
++}
++// Caller holds G: this is the signal operation shared by SVC11 and host service
++// producers. Keeping the lock lets the test clear/close before waiters resume.
++static void signal_locked(uint32_t write) {
++    event_t *e = h_peek(write, O_EVENT_W); assert(e);
++    e->signaled = 1; wake_sync_waiters(e);
++}
++static void framing(void) {
++    ends_t e = event_new();
++    uint64_t r[32] = {e.write}; assert(svc_thread(0x11, r) && !r[0]);
++    uint32_t handles[65] = {e.read, 0};
++    assert(wait_now(handles, 2, 0, NULL) == R_BAD_HANDLE);
++    handles[1] = e.write; assert(wait_now(handles, 2, 0, NULL) == R_BAD_HANDLE);
++    handles[1] = H_CUR_THREAD; assert(wait_now(handles, 2, 0, NULL) == R_BAD_HANDLE);
++    assert(wait_now(handles, -1, 0, NULL) == 0xee01);
++    assert(wait_now(handles, 65, 0, NULL) == 0xee01);
++    assert(wait_now(NULL, 0, 0, NULL) == R_TIMEOUT);
++    handles[1] = e.read; uint64_t index;
++    assert(!wait_now(handles, 2, 0, &index) && index == 0);
++    for (int i = 0; i < 64; i++) handles[i] = e.read;
++    assert(!wait_now(handles, 64, 0, &index) && index == 0);
++    // An already signaled object and a poll both precede pending cancellation.
++    r[0] = H_CUR_THREAD; assert(svc_thread(0x19, r) && !r[0]);
++    assert(!wait_now(handles, 1, -1, NULL));
++    r[0] = e.read; assert(svc_thread(0x12, r) && !r[0]);
++    assert(wait_now(handles, 1, 0, NULL) == R_TIMEOUT);
++    assert(wait_now(handles, 1, -1, NULL) == R_CANCELLED);
++    assert(wait_now(handles, 1, 0, NULL) == R_TIMEOUT);
++    assert(wait_now(handles, 1, 100000, NULL) == R_TIMEOUT);
++    pthread_mutex_lock(&G);
++    assert(((event_t *)h_peek(e.read, O_EVENT_R))->refs == 2);
++    pthread_mutex_unlock(&G);
++    event_close(e);
++}
++static uint64_t event_svc(int num, uint32_t handle) {
++    uint64_t r[32] = {handle}; assert(svc_thread(num, r)); return r[0];
++}
++static void endpoints(void) {
++    ends_t e = event_new();
++    assert(wait_now(&e.read, 1, 0, NULL) == R_TIMEOUT);
++    assert(event_svc(0x11, e.read) == R_BAD_HANDLE);
++    assert(event_svc(0x17, e.write) == R_BAD_HANDLE);
++    assert(event_svc(0x17, cur()->handle) == R_BAD_HANDLE);
++    assert(event_svc(0x17, H_CUR_THREAD) == R_BAD_HANDLE);
++    assert(event_svc(0x17, e.read) == R_BAD_STATE);
++    assert(!event_svc(0x12, e.write));
++    assert(!event_svc(0x11, e.write));
++    assert(!wait_now(&e.read, 1, 0, NULL));
++    assert(!wait_now(&e.read, 1, 0, NULL)); // Waiting does not clear a kernel event.
++    assert(!event_svc(0x12, e.read));
++    assert(wait_now(&e.read, 1, 0, NULL) == R_TIMEOUT);
++    assert(!event_svc(0x11, e.write));
++    assert(!event_svc(0x17, e.read));
++    assert(event_svc(0x17, e.read) == R_BAD_STATE);
++    // Allocator final release signals, then closes the producer's endpoint.
++    assert(!event_svc(0x11, e.write)); close_handle(e.write);
++    assert(!wait_now(&e.read, 1, 0, NULL)); close_handle(e.read);
++}
++static void signal_then_clear(void) {
++    ends_t a = event_new(), b = event_new();
++    waiter_t first = {.handles = {a.read, b.read, b.read}, .count = 3};
++    waiter_t second = {.handles = {b.read}, .count = 1};
++    wait_start(&first); wait_start(&second);
++    pthread_mutex_lock(&G);
++    signal_locked(b.write);
++    ((event_t *)h_peek(b.write, O_EVENT_W))->signaled = 0;
++    pthread_mutex_unlock(&G);
++    wait_finish(&first, 0, 1); wait_finish(&second, 0, 0);
++    assert(wait_now(&b.read, 1, 0, NULL) == R_TIMEOUT);
++    event_close(a); event_close(b);
++}
++static void close_and_reuse(void) {
++    ends_t old = event_new();
++    waiter_t w = {.handles = {old.read}, .count = 1}; wait_start(&w);
++    close_handle(old.read);
++    ends_t replacement = event_new(); assert(replacement.write == old.read);
++    pthread_mutex_lock(&G);
++    signal_locked(replacement.write); assert(w.thread->wkind == 4);
++    signal_locked(old.write);
++    pthread_mutex_unlock(&G);
++    close_handle(old.write);
++    wait_finish(&w, 0, 0); event_close(replacement);
++}
++static void handle_array_snapshot(void) {
++    ends_t old = event_new(), replacement = event_new();
++    waiter_t w = {.handles = {old.read}, .count = 1}; wait_start(&w);
++    pthread_mutex_lock(&G);
++    w.handles[0] = replacement.read;
++    signal_locked(replacement.write); assert(w.thread->wkind == 4);
++    signal_locked(old.write);
++    pthread_mutex_unlock(&G);
++    wait_finish(&w, 0, 0); event_close(old); event_close(replacement);
++}
++static void cancellation_and_release(void) {
++    ends_t e = event_new();
++    waiter_t w = {.handles = {e.read, e.read}, .count = 2}; wait_start(&w);
++    close_handle(e.write); close_handle(e.read);
++    uint64_t r[32] = {w.thread->handle}; assert(svc_thread(0x19, r) && !r[0]);
++    wait_finish(&w, R_CANCELLED, 0);
++    w = (waiter_t){.count = 0}; wait_start(&w);
++    r[0] = w.thread->handle; assert(svc_thread(0x19, r) && !r[0]);
++    wait_finish(&w, R_CANCELLED, 0);
++}
++static pthread_mutex_t exit_mu = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t exit_cv = PTHREAD_COND_INITIALIZER;
++static int may_exit;
++static void *exit_body(void *arg) {
++    thr_t *t = arg; pthread_setspecific(g_keythr, t);
++    pthread_mutex_lock(&exit_mu);
++    while (!may_exit) pthread_cond_wait(&exit_cv, &exit_mu);
++    pthread_mutex_unlock(&exit_mu); thread_exit(t); return NULL;
++}
++static void closed_thread_wait(void) {
++    thr_t *target = new_thread(); pthread_t pt;
++    assert(!pthread_create(&pt, NULL, exit_body, target));
++    waiter_t w = {.handles = {target->handle, target->handle}, .count = 2}; wait_start(&w);
++    uint32_t old_handle = target->handle; close_handle(old_handle);
++    ends_t replacement = event_new(); assert(replacement.write == old_handle);
++    pthread_mutex_lock(&exit_mu); may_exit = 1; pthread_cond_signal(&exit_cv); pthread_mutex_unlock(&exit_mu);
++    assert(!pthread_join(pt, NULL));
++    wait_finish(&w, 0, 0); event_close(replacement);
++}
++int main(int argc, char **argv) {
++    alarm(10); svc_thread_main_init();
++    const char *names[] = {"framing", "endpoints", "signal-clear", "close-reuse", "snapshot", "cancel-release", "thread-close"};
++    void (*tests[])(void) = {framing, endpoints, signal_then_clear, close_and_reuse, handle_array_snapshot, cancellation_and_release, closed_thread_wait};
++    for (unsigned i = 0; i < sizeof tests / sizeof *tests; i++) {
++        if (argc > 1 && strcmp(argv[1], names[i])) continue;
++        tests[i](); printf("PASS: %s\n", names[i]);
++        int handles, live, objects; thr_counts(&handles, &live, &objects);
++        assert(handles == 1 && live == 1 && objects == 1);
++    }
++    return 0;
++}
 diff --git a/dm/host/tests/t_time.c b/dm/host/tests/t_time.c
 index a81567b9..da7ee0af 100644
 --- a/dm/host/tests/t_time.c
