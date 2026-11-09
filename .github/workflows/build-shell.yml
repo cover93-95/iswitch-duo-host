@@ -23,7 +23,7 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
   EXPECTED_XCODE: Xcode 27.2
   NX2APPLE_COMMIT: 5c0db6cde8bd648f313d404dac45ac55d8c2a62f
-  EXPECTED_CHAIN: b70f92017083
+  EXPECTED_CHAIN: 2f63616dff08
 
 defaults:
   run:
@@ -106,7 +106,7 @@ jobs:
 
           DM_BUNDLE_ID: local.iswitchduo.botw
           DM_SHELL_NAME: NX2 Switch 2
-          DM_APP_VERSION: 1.4.20
+          DM_APP_VERSION: 1.4.21
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
