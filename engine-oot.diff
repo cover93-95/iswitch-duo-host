@@ -22468,6 +22468,51 @@ index 1187658a..5badfbc5 100644
              const char *ms = getenv("DM_SCREEN_ASPECT_SITES"); uint32_t mask = ms ? (uint32_t)strtoul(ms, NULL, 0) : 0xffffffffu;   // the stubs of the game's own conversions, one bit each (+0x54)
              memcpy(dm_fps_state + 0x54, &mask, 4);
              if (ms) LOG("%s: screen shape: conversion sites %#x (DM_SCREEN_ASPECT_SITES)", g_fps_mod, mask);
+diff --git a/dm/host/pad_deadzone.h b/dm/host/pad_deadzone.h
+new file mode 100644
+index 00000000..a188c6db
+--- /dev/null
++++ b/dm/host/pad_deadzone.h
+@@ -0,0 +1,39 @@
++// Physical controllers' sticks (DmGamepad.m read_pad; pure, so tests/t_pad_deadzone.c checks it without a controller): a circular dead zone on each stick's X / Y pair,
++// then a rescale so the stick still reaches full tilt. GameController hands over each axis in -1..1 with no dead zone the host can count on, and nothing after it has one
++// (hle_hid.c reports the values as they come), so a stick resting a little off centre (after a flick, or a pad's coarse axes resting a step off zero) reached the game
++// as a slow drift. A Switch's own hid service gives games sticks that rest at zero; this does the same here.
++//   Inside the dead zone (radius dz, measured on the pair: hypot(x, y), so a diagonal is not cut sooner than a straight tilt) the stick is at rest.
++//   From dz to the unit circle the tilt rises linearly from 0 to full, in the stick's own direction: radius r becomes (r - dz) / (1 - dz).
++//   Past the unit circle (the corners of a square-gated pad, up to sqrt 2) the values are left as they were, so no pad loses range; a full tilt is still 32767 on its axis.
++// The touch gamepad's sticks have their own dead zone (DmGamepad.m recompute) and never come through here, so no stick gets two.
++// DM_PAD_DEADZONE (Documents/env.txt): the radius as a fraction of full tilt, 0 to 0.5; 0 turns it off and gives the values exactly as before. Unset: 0.05.
++// A value that is not a number in that range is not taken (the default applies and the log says so).
++#pragma once
++#include <math.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include "dm_input.h"
++
++#define DM_PAD_DEADZONE_DEFAULT 0.05f
++#define DM_PAD_DEADZONE_MAX 0.5f
++
++// The radius DM_PAD_DEADZONE asks for; *taken = 0 when a value was given but not taken (the default is returned then)
++static inline float pad_deadzone_parse(const char *s, int *taken) {
++    *taken = 1;
++    if (!s || !*s) return DM_PAD_DEADZONE_DEFAULT;
++    char *end; float v = strtof(s, &end);
++    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
++    if (end == s || *end || !isfinite(v) || v < 0 || v > DM_PAD_DEADZONE_MAX) { *taken = 0; return DM_PAD_DEADZONE_DEFAULT; }
++    return v;
++}
++// One axis in -1..1 to the host's range, as the front end always did (clamped, then truncated toward zero)
++static inline int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
++// One stick: GameController's x, y (y up) to the host's two axes (y up), through the dead zone dz
++static inline void pad_stick(float dz, float x, float y, int32_t *ox, int32_t *oy) {
++    if (dz > 0) {
++        float r = hypotf(x, y);
++        if (r <= dz) x = y = 0;
++        else if (r < 1) { float s = (r - dz) / ((1 - dz) * r); x *= s; y *= s; }   // r = 1 gives s = 1: no step at the unit circle
++    }
++    *ox = pad_axis(x); *oy = pad_axis(y);
++}
 diff --git a/dm/host/pad_hid.h b/dm/host/pad_hid.h
 index 542b5671..888ee2f2 100644
 --- a/dm/host/pad_hid.h
@@ -22947,7 +22992,7 @@ index b6dc4c46..b2804f6b 100644
      if (e) {
          char spec[512]; strlcpy(spec, e, sizeof spec);
 diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
-index b3ee5431..ed8be3de 100644
+index b3ee5431..59780232 100644
 --- a/dm/host/tests/Makefile
 +++ b/dm/host/tests/Makefile
 @@ -12,7 +12,7 @@ QUIET = $(if $(findstring -fsanitize,$(SAN)),,2>/dev/null)
@@ -22974,7 +23019,7 @@ index b3ee5431..ed8be3de 100644
  	$(B)/t_shared_font
  	TMPDIR="$(abspath $(B))" $(B)/t_profile_runtime
  	$(B)/t_system_event
-@@ -53,16 +56,19 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
+@@ -53,17 +56,21 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
  	$(B)/t_codec_video
  	$(B)/t_movie_avc
  	$(B)/t_nv
@@ -22992,9 +23037,11 @@ index b3ee5431..ed8be3de 100644
  	$(B)/t_pad_hid
 +	$(B)/t_pad_pro
  	$(B)/t_input_map
++	$(B)/t_pad_deadzone
  	$(B)/t_launcher_contract
  	$(B)/t_haptics
-@@ -74,6 +80,12 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
+ 	$(B)/t_haptics_apple
+@@ -74,6 +81,12 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture
  	$(B)/t_pad_motion
  	$(B)/t_controllers_mac
  run: $(B)/t_nro
@@ -23007,7 +23054,7 @@ index b3ee5431..ed8be3de 100644
  run: $(B)/t_symbols
  $(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c ../hle_profile.c
-@@ -113,7 +125,7 @@ cheats: $(B)/t_cheats
+@@ -113,7 +126,7 @@ cheats: $(B)/t_cheats
  $(GAME_H): FORCE
  	$(MAKE) -C .. game_profile GAME=$(GAME)
  $(B)/t_heap_size: t_heap_size.c ../hle_svc.c ../dm.h $(GAME_H) | $(B)
@@ -23016,7 +23063,7 @@ index b3ee5431..ed8be3de 100644
  .PHONY: heap_size
  heap_size: $(B)/t_heap_size
  	$(B)/t_heap_size
-@@ -189,12 +201,19 @@ watch-sample: $(B)/t_watch_sample
+@@ -189,12 +202,19 @@ watch-sample: $(B)/t_watch_sample
  	$(B)/t_watch_sample
  $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_altstack.c t_altstack_stub.c ../crash.c
@@ -23036,7 +23083,7 @@ index b3ee5431..ed8be3de 100644
  run: $(B)/t_nv
  $(B)/t_nv: t_nv.c ../../gfx/hle_nv.c ../hle.h ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_nv.c
-@@ -220,6 +239,9 @@ $(B)/t_home_quit: t_home_quit.c ../home_quit.h | $(B)
+@@ -220,6 +240,9 @@ $(B)/t_home_quit: t_home_quit.c ../home_quit.h | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -I.. -o $@ t_home_quit.c
  $(B)/t_home_quit_mac: t_home_quit_mac.m ../home_quit_mac.h | $(B)
  	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -Wno-unused-function -I.. -o $@ t_home_quit_mac.m -framework Cocoa -framework QuartzCore
@@ -23046,7 +23093,17 @@ index b3ee5431..ed8be3de 100644
  run: $(B)/t_motion_pro $(B)/t_motion_pro_mac
  $(B)/t_motion_pro: t_motion_pro.c ../motion_pro.h | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -fsanitize=address,undefined -o $@ t_motion_pro.c
-@@ -247,6 +269,8 @@ $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_
+@@ -227,6 +250,9 @@ $(B)/t_motion_pro_mac: t_motion_pro_mac.m ../motion_pro_mac.h ../motion_pro.h ..
+ 	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_motion_pro_mac.m -framework Foundation -framework GameController -framework IOKit
+ $(B)/t_input_map: t_input_map.c ../input_map.h ../dm_input.h | $(B)
+ 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. -o $@ t_input_map.c
++run: $(B)/t_pad_deadzone
++$(B)/t_pad_deadzone: t_pad_deadzone.c ../pad_deadzone.h ../dm_input.h | $(B)
++	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_pad_deadzone.c
+ $(B)/t_launcher_contract: t_launcher_contract.c ../input_map.h ../dm_input.h | $(B)
+ 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. -o $@ t_launcher_contract.c
+ $(B)/t_hid: t_hid.c ../hle_hid.c ../motion_fusion.h ../hle_haptics.c ../hle_haptics.h ../pad_slots.h ../dm_input.h ../hle.h ../dm.h $(GAME_H) | $(B)
+@@ -247,6 +273,8 @@ $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_
  	$(CLANG) -O1 -Wno-unused-function -DDM_TEST_HOOKS -DDM_TEST_CV_OLD_ORDER -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c ../hle_profile.c
  $(B)/t_pollwait: t_pollwait.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_pollwait.c t_condvar_stub.c ../hle_profile.c
@@ -23055,7 +23112,7 @@ index b3ee5431..ed8be3de 100644
  $(B)/t_preempt: t_preempt.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
  	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_preempt.c t_condvar_stub.c ../hle_profile.c
  .PHONY: preempt
-@@ -292,7 +316,7 @@ tsan: $(B)/t_audio_spsc_tsan $(B)/t_hid_tsan
+@@ -292,7 +320,7 @@ tsan: $(B)/t_audio_spsc_tsan $(B)/t_hid_tsan
  	$(B)/t_audio_spsc_tsan
  	TMPDIR="$(abspath $(B))" $(B)/t_hid_tsan
  
@@ -23064,7 +23121,7 @@ index b3ee5431..ed8be3de 100644
  MEM_DEPS = t_svc_memory.c memory_profile/game_profile.h ../hle_svc.c ../hle_guestthread.c ../hle.h ../dm.h ../hle_profile.c ../hle_profile.h
  $(B)/t_svc_memory: $(MEM_DEPS) | $(B)
  	$(CLANG) $(MEM_FLAGS) -fsanitize=undefined -o $@ t_svc_memory.c ../hle_profile.c
-@@ -315,7 +339,15 @@ memory-dirty: $(B)/t_svc_memory_dirty
+@@ -315,7 +343,15 @@ memory-dirty: $(B)/t_svc_memory_dirty
  	$(B)/t_svc_memory_dirty
  memory-profile: $(B)/t_svc_memory
  	DM_TEST_BUILD=$(B) $(PYTHON) test_memory_profile.py
@@ -23081,7 +23138,7 @@ index b3ee5431..ed8be3de 100644
  
  # A native blocking notification wait must release the thread's guest core.
  $(B)/t_notify_sched: t_notify_sched.c t_condvar_stub.c ../hle_thread.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
-@@ -333,7 +365,7 @@ include ../../sanitizers/sanitizers.mk
+@@ -333,7 +369,7 @@ include ../../sanitizers/sanitizers.mk
  asan:
  	@$(call san_fresh,$(B)/asan,$(ASAN_FLAGS))
  	$(ASAN_ENV) $(MAKE) B=$(B)/asan SAN="$(ASAN_FLAGS)" run
@@ -23090,7 +23147,7 @@ index b3ee5431..ed8be3de 100644
  tsan-threads:
  	@$(call san_fresh,$(B)/tsan,$(TSAN_FLAGS))
  	$(TSAN_ENV) $(MAKE) B=$(B)/tsan SAN="$(TSAN_FLAGS)" tsan-threads-run
-@@ -354,10 +386,14 @@ tsan-threads-run: $(addprefix $(B)/,$(TSAN_T))
+@@ -354,10 +390,14 @@ tsan-threads-run: $(addprefix $(B)/,$(TSAN_T))
  	$(B)/t_notify_sched
  	$(B)/t_notify_sched --all-peers
  	$(B)/t_altstack
@@ -23756,6 +23813,114 @@ index 4c28d50b..85137584 100644
  
  struct dm_flags g_flag;
  uint64_t now_ns(void) { return 0; }
+diff --git a/dm/host/tests/t_pad_deadzone.c b/dm/host/tests/t_pad_deadzone.c
+new file mode 100644
+index 00000000..204cf438
+--- /dev/null
++++ b/dm/host/tests/t_pad_deadzone.c
+@@ -0,0 +1,102 @@
++// Physical controllers' stick dead zone (pad_deadzone.h): the centre and small tilts at rest, the rescale past the dead zone (continuous, rising, full tilt kept), diagonals
++// measured on the X / Y pair, directions kept, square-gate corners and out-of-range values as before, 0 giving exactly the old values, and DM_PAD_DEADZONE's parsing
++#include <stdio.h>
++#include "../pad_deadzone.h"
++
++static int checks, fails;
++#define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
++
++static int32_t old_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }   // DmGamepad.m's axis() before the dead zone
++static double mag(int32_t x, int32_t y) { return hypot(x, y) / DM_STICK_MAX; }
++
++int main(void) {
++    const float dz = DM_PAD_DEADZONE_DEFAULT;
++    int32_t x, y;
++
++    // Centre and tilts inside the dead zone: at rest
++    pad_stick(dz, 0, 0, &x, &y); CHECK(x == 0 && y == 0, "centre is at rest");
++    pad_stick(dz, 0.03f, -0.03f, &x, &y); CHECK(x == 0 && y == 0, "a 4.2% diagonal drift is at rest");
++    pad_stick(dz, -0.049f, 0, &x, &y); CHECK(x == 0 && y == 0, "4.9% to the left is at rest");
++    pad_stick(dz, 0, 0.05f, &x, &y); CHECK(x == 0 && y == 0, "exactly the radius is at rest");
++    pad_stick(dz, 0.04f, 0.04f, &x, &y); CHECK(x != 0 && y != 0, "4% on each axis is 5.7% on the pair: past the circle (a per-axis zone would have kept it at rest)");
++
++    // Small tilts just past the dead zone start from zero, not with a jump
++    pad_stick(dz, 0.06f, 0, &x, &y); CHECK(x > 0 && x < 400 && y == 0, "6% right gives about 1% (344)");
++    pad_stick(dz, 0, -0.10f, &x, &y); CHECK(x == 0 && y < -1700 && y > -1750, "10% down gives about -5.3% (-1724)");
++    pad_stick(dz, 0.0501f, 0, &x, &y); CHECK(x >= 0 && x <= 5, "just past the radius is still almost zero");
++
++    // Rising and continuous along a ray, from the centre to full tilt: no step anywhere, including at the dead zone and the unit circle
++    int32_t prev = 0; int rising = 1, smooth = 1;
++    for (int i = 0; i <= 10000; i++) {
++        float r = i / 10000.f; pad_stick(dz, r, 0, &x, &y);
++        if (x < prev) rising = 0;
++        if (x - prev > 40) smooth = 0;   // 1/10000 of travel times 1/(1 - dz) is 3.4 units a step: 40 would be a jump
++        prev = x;
++    }
++    CHECK(rising, "the output never goes back as the stick goes out");
++    CHECK(smooth, "no jump along the ray");
++
++    // Full tilt in each direction stays full
++    pad_stick(dz, 1, 0, &x, &y); CHECK(x == 32767 && y == 0, "full right is 32767");
++    pad_stick(dz, -1, 0, &x, &y); CHECK(x == -32767 && y == 0, "full left is -32767");
++    pad_stick(dz, 0, 1, &x, &y); CHECK(x == 0 && y == 32767, "full up is +32767 (y up, as the host and the Switch)");
++    pad_stick(dz, 0, -1, &x, &y); CHECK(x == 0 && y == -32767, "full down is -32767");
++
++    // Diagonals: on a round gate full tilt stays full and both axes stay equal
++    const float d = 0.70710678f;
++    pad_stick(dz, d, d, &x, &y); CHECK(x == y && x >= 23160 && x <= 23170, "full up-right on a round gate: both axes about 23169");
++    pad_stick(dz, -d, -d, &x, &y); CHECK(x == y && x <= -23160 && x >= -23170, "full down-left on a round gate");
++    CHECK(fabs(mag(x, y) - 1) < 0.001, "a full diagonal has full length");
++    pad_stick(dz, 0.5f * d, -0.5f * d, &x, &y); CHECK(x == -y && fabs(mag(x, y) - (0.5 - dz) / (1 - dz)) < 0.001, "a half diagonal is rescaled on its length, not per axis");
++
++    // Square-gate corners and values past the range: as before
++    pad_stick(dz, 1, 1, &x, &y); CHECK(x == 32767 && y == 32767, "a square gate's corner still gives both axes full");
++    pad_stick(dz, 1.2f, -0.3f, &x, &y); CHECK(x == old_axis(1.2f) && y == old_axis(-0.3f), "past the unit circle the values are the old ones");
++    pad_stick(dz, -2, 2, &x, &y); CHECK(x == -32767 && y == 32767, "out of range is clamped as before");
++
++    // The direction is kept, the length follows (r - dz) / (1 - dz), opposite tilts are opposite, nothing passes full tilt
++    int dir = 1, len = 1, odd = 1, bound = 1;
++    for (int a = 0; a < 360; a += 5) for (int k = 6; k < 100; k += 7) {
++        float r = k / 100.f, t = a * (float)M_PI / 180, sx = r * cosf(t), sy = r * sinf(t);
++        int32_t nx, ny; pad_stick(dz, sx, sy, &x, &y); pad_stick(dz, -sx, -sy, &nx, &ny);
++        double want = (r - dz) / (1 - dz), got = mag(x, y);
++        if (fabs(got - want) > 0.0005) len = 0;
++        if (got > 0.05) { double e = fabs(remainder(atan2(y, x) - t, 2 * M_PI)); if (e > 0.002) dir = 0; }   // past 5%: each axis truncated by under 1 of 1638
++        if (nx != -x || ny != -y) odd = 0;
++        if (abs(x) > 32767 || abs(y) > 32767) bound = 0;
++    }
++    CHECK(dir, "every tilt keeps its direction");
++    CHECK(len, "every tilt has the rescaled length");
++    CHECK(odd, "opposite tilts give opposite values");
++    CHECK(bound, "no axis passes 32767");
++
++    // 0 turns it off: exactly the old values, on a fine grid and at the edges
++    int same = 1;
++    for (int i = -1100; i <= 1100; i += 3) for (int j = -1100; j <= 1100; j += 7) {
++        float sx = i / 1000.f, sy = j / 1000.f; pad_stick(0, sx, sy, &x, &y);
++        if (x != old_axis(sx) || y != old_axis(sy)) same = 0;
++    }
++    CHECK(same, "DM_PAD_DEADZONE=0 gives exactly the old values");
++
++    // A larger radius
++    pad_stick(0.2f, 0.19f, 0, &x, &y); CHECK(x == 0, "0.2: 19% is at rest");
++    pad_stick(0.2f, 0.6f, 0, &x, &y); CHECK(x == old_axis(0.5f), "0.2: 60% gives 50%");
++    pad_stick(0.2f, 1, 0, &x, &y); CHECK(x == 32767, "0.2: full tilt stays full");
++
++    // DM_PAD_DEADZONE
++    int t;
++    CHECK(pad_deadzone_parse(NULL, &t) == 0.05f && t, "unset: 0.05");
++    CHECK(pad_deadzone_parse("", &t) == 0.05f && t, "empty: 0.05");
++    CHECK(pad_deadzone_parse("0.08", &t) == 0.08f && t, "0.08 is taken");
++    CHECK(pad_deadzone_parse("0", &t) == 0 && t, "0 is taken (off)");
++    CHECK(pad_deadzone_parse("0.5", &t) == 0.5f && t, "0.5 is the largest taken");
++    CHECK(pad_deadzone_parse("0.1\r", &t) == 0.1f && t, "a CR from a Windows-edited env.txt is fine");
++    CHECK(pad_deadzone_parse("0.6", &t) == 0.05f && !t, "0.6 is not taken");
++    CHECK(pad_deadzone_parse("-0.1", &t) == 0.05f && !t, "a negative radius is not taken");
++    CHECK(pad_deadzone_parse("5%", &t) == 0.05f && !t, "a percent sign is not taken");
++    CHECK(pad_deadzone_parse("abc", &t) == 0.05f && !t, "a word is not taken");
++    CHECK(pad_deadzone_parse("nan", &t) == 0.05f && !t, "nan is not taken");
++
++    printf("t_pad_deadzone: %d checks, %d failed\n", checks, fails);
++    return fails != 0;
++}
 diff --git a/dm/host/tests/t_pad_hid.c b/dm/host/tests/t_pad_hid.c
 index 898ad8f6..c5cf9867 100644
 --- a/dm/host/tests/t_pad_hid.c
@@ -24650,18 +24815,19 @@ index 7fb0bfc2..77d7ca3e 100644
  
  // The performance HUD (the per-game setting DM_METAL_HUD) needs MTL_HUD_ENABLED in the environment before Metal starts in this
 diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
-index 167cc491..aa642a01 100644
+index 167cc491..7b39160b 100644
 --- a/dm/ios/Sources/DmGamepad.m
 +++ b/dm/ios/Sources/DmGamepad.m
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,8 @@
  #include "motion_fusion.h"
  #include "pad_apple.h"
  #include "pad_slots.h"
++#include "pad_deadzone.h"
 +#include "ctrl_prompt.h"
  #include "input_map.h"
  #include <stdatomic.h>
  #import "DmLayout.h"
-@@ -572,16 +573,19 @@ static BOOL g_hintShown;   // once per launch
+@@ -572,16 +574,19 @@ static BOOL g_hintShown;   // once per launch
  // Each controller with an extended gamepad profile is a player of its own, as on the Mac (front_mac.m): it holds a slot (pad_slots.h: player 1 first, a reconnected controller
  // gets its player back) and goes to dm_pad_set_player, and hle_hid.c reports player n on its own npad while the slot is held (dm_pad_players). Player 1's controller is ORed
  // with the touch gamepad; a one-player game that supports only No1 / Handheld still sees every controller as player 1 (hle_hid.c). Each player has its controller's rumble and
@@ -24673,7 +24839,8 @@ index 167cc491..aa642a01 100644
 -static int g_merge;
 +static int g_merge, g_press_to_join;
  static pad_map g_padmap;   // DM_PAD_MAP affects physical controllers only
- static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+-static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
++static float g_deadzone = DM_PAD_DEADZONE_DEFAULT;   // DM_PAD_DEADZONE: physical controllers' sticks only (pad_deadzone.h)
 +static const char *pad_name(GCController *c);
 +static void npad_name(int p, char *out, size_t cap);
 +static int cp_poll(void);
@@ -24685,7 +24852,7 @@ index 167cc491..aa642a01 100644
      _Static_assert(DM_BTN_A == 1u << B_A && DM_BTN_B == 1u << B_B && DM_BTN_X == 1u << B_X && DM_BTN_Y == 1u << B_Y, "face button bits");
      uint64_t m = dm_pad_face(g);   // by position, a Nintendo pad by its labels
      #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
-@@ -590,7 +594,16 @@ static void read_pad(GCExtendedGamepad *g) {
+@@ -590,8 +595,20 @@ static void read_pad(GCExtendedGamepad *g) {
      if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
      K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
      #undef K
@@ -24697,14 +24864,24 @@ index 167cc491..aa642a01 100644
 +        npad_name(p, nb, sizeof nb); LOG("controller '%s': a button pressed: player %d (npad %s)", pad_name(c), p + 1, nb);
 +    }
      m = pad_map_apply(&g_padmap, m);
+-    dm_pad_set_player(p, m, axis(g.leftThumbstick.xAxis.value), axis(g.leftThumbstick.yAxis.value), axis(g.rightThumbstick.xAxis.value), axis(g.rightThumbstick.yAxis.value));
 +    if (cp_poll()) return;   // the controller applet's prompt has the controllers (front_ctrl_support)
 +    dm_haptics_apple_controller(p, g.controller);
-     dm_pad_set_player(p, m, axis(g.leftThumbstick.xAxis.value), axis(g.leftThumbstick.yAxis.value), axis(g.rightThumbstick.xAxis.value), axis(g.rightThumbstick.yAxis.value));
++    int32_t lx, ly, rx, ry;   // each stick's X / Y pair through the circular dead zone (pad_deadzone.h)
++    pad_stick(g_deadzone, g.leftThumbstick.xAxis.value, g.leftThumbstick.yAxis.value, &lx, &ly);
++    pad_stick(g_deadzone, g.rightThumbstick.xAxis.value, g.rightThumbstick.yAxis.value, &rx, &ry);
++    dm_pad_set_player(p, m, lx, ly, rx, ry);
  }
  // Home and Capture: without this iOS takes them as system gestures (Home opens the Games overlay, Capture a screenshot); the app gives them no function
-@@ -605,7 +618,9 @@ static void pads_start(void) {
+ static void pad_keep_system_buttons(GCController *c) {   // Home held for 2 s opens the quit prompt (front_ios.m): iOS 27 respects the claim when the Home button setting for apps lets the app decide
+@@ -604,8 +621,14 @@ static void pads_start(void) {
+     pad_map_default(&g_padmap);
      const char *pm = getenv("DM_PAD_MAP");
      if (pm && *pm) { int bad = pad_map_parse(&g_padmap, pm); LOG("front end: controller buttons from DM_PAD_MAP (%s)%s", pm, bad ? ", malformed entries left out" : ""); }
++    const char *dz = getenv("DM_PAD_DEADZONE"); int taken;
++    g_deadzone = pad_deadzone_parse(dz, &taken);
++    if (!taken) LOG("[RED] front end: DM_PAD_DEADZONE=%s is not a number from 0 to %.2f, the sticks keep the default dead zone", dz, DM_PAD_DEADZONE_MAX);
++    LOG("front end: controller sticks: circular dead zone %.1f%% of full tilt%s", g_deadzone * 100, dz && *dz && taken ? " (DM_PAD_DEADZONE)" : g_deadzone > 0 ? "" : " (off)");
      const char *e = getenv("DM_PAD_MERGE"); g_merge = e && atoi(e);
 +    e = getenv("DM_PAD_PRESS_TO_JOIN"); g_press_to_join = !g_merge && e && atoi(e);
      LOG("front end: %s", g_merge ? "every controller is player 1 (DM_PAD_MERGE)" : "each controller is a player of its own, the touch gamepad plays with player 1");
@@ -24712,7 +24889,7 @@ index 167cc491..aa642a01 100644
  }
  // Called at start and on every connect / disconnect (gone: the controller that was just removed, nil otherwise); returns whether a controller is in use
  static BOOL pads_merged(GCController *gone) {
-@@ -622,7 +637,7 @@ static BOOL pads_merged(GCController *gone) {
+@@ -622,7 +645,7 @@ static BOOL pads_merged(GCController *gone) {
      return any;
  }
  static BOOL pads_slotted(GCController *gone) {
@@ -24721,7 +24898,7 @@ index 167cc491..aa642a01 100644
      for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p] && (g_held[p] == gone || ![now containsObject:g_held[p]])) {
          npad_name(p, nb, sizeof nb); LOG("controller '%s' disconnected: player %d (npad %s) is free", pad_name(g_held[p]), p + 1, nb);
          g_held[p].extendedGamepad.valueChangedHandler = nil;
-@@ -632,6 +647,12 @@ static BOOL pads_slotted(GCController *gone) {
+@@ -632,6 +655,12 @@ static BOOL pads_slotted(GCController *gone) {
          dm_pad_set_player(p, 0, 0, 0, 0, 0);   // nothing stays pressed
      }
      for (GCController *c in now) if (c.extendedGamepad && c != gone && pad_slot_of(&g_slots, (__bridge const void *)c) < 0) {
@@ -24734,7 +24911,7 @@ index 167cc491..aa642a01 100644
          int p = pad_slot_take(&g_slots, (__bridge const void *)c, pad_name(c));
          if (p < 0) { LOG("controller '%s' connected: all %d players are taken, not used", pad_name(c), DM_PLAYERS); continue; }
          g_held[p] = c; pad_keep_system_buttons(c);
-@@ -641,7 +662,8 @@ static BOOL pads_slotted(GCController *gone) {
+@@ -641,7 +670,8 @@ static BOOL pads_slotted(GCController *gone) {
          read_pad(c.extendedGamepad);
      }
      dm_pad_players(pad_slot_mask(&g_slots));
@@ -24744,7 +24921,7 @@ index 167cc491..aa642a01 100644
  }
  - (void)padsChanged:(NSNotification *)note {
      GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
-@@ -651,6 +673,97 @@ static BOOL pads_slotted(GCController *gone) {
+@@ -651,6 +681,97 @@ static BOOL pads_slotted(GCController *gone) {
  }
  @end
  
