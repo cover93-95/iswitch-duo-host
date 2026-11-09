@@ -1,0 +1,162 @@
+# Test branch only (test/pad-deadzone): checks the physical controllers' stick dead zone (DM_PAD_DEADZONE, dm/host/pad_deadzone.h) before it goes into an Ocarina shell.
+# It builds nothing that is kept: no IPA, no shell artifact (only text logs). The production workflow (build-shell.yml) runs only on codex/oot-shell and is not changed here.
+#   1. The engine of this branch against the engine of production shell 1.4.21 (codex/oot-shell 47d16aa): only the four dead-zone files may differ, the shader chain must be the same.
+#   2. The C test t_pad_deadzone (as dm/host/tests/Makefile builds it: -Wall -Werror, address and undefined-behaviour sanitizers), and once more at -O2 without sanitizers.
+#   3. The real shell build (build_shell.sh, the production steps and settings): DmGamepad.m is compiled with the new header; no warning may name the changed files.
+# Never add game files, keys, or anything extracted from them.
+name: Test pad dead zone
+
+on:
+  push:
+    branches:
+      - test/pad-deadzone
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+  EXPECTED_XCODE: Xcode 27.2
+  NX2APPLE_COMMIT: 5c0db6cde8bd648f313d404dac45ac55d8c2a62f
+  EXPECTED_CHAIN: 2f63616dff08
+  PROD_SHELL_COMMIT: 47d16aa218feab2706858415f9495dca201f0efc   # Ocarina shell 1.4.21, codex/oot-shell
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Dead zone tests and shell compile
+    runs-on: xcode-27   # Runner standard. Jamais xcode-27-xlarge, facturé à part.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LNPANDY/NX2Apple
+          ref: ${{ env.NX2APPLE_COMMIT }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: oot
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: prod
+          ref: ${{ env.PROD_SHELL_COMMIT }}
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          test "$(xcodebuild -version | head -1)" = "$EXPECTED_XCODE"
+
+      - name: Engines (this branch and production 1.4.21)
+        run: |
+          command -v xcodegen || brew install xcodegen
+          python3 -m venv .venv
+          .venv/bin/pip install fonttools==4.68.0
+          python3 tools/engine.py sync
+          cp -R engine "$RUNNER_TEMP/engine-prod"
+          git -C "$RUNNER_TEMP/engine-prod" apply "$GITHUB_WORKSPACE/prod/engine-oot.diff"
+          git -C engine apply "$GITHUB_WORKSPACE/oot/engine-oot.diff"
+          git apply "$GITHUB_WORKSPACE/oot/frontend-ios.diff"
+          echo "ENGINE_PROD=$RUNNER_TEMP/engine-prod" >> "$GITHUB_ENV"
+
+      - name: Only the dead-zone files differ from production, shader chain unchanged
+        run: |
+          diff -rq -x .git "$ENGINE_PROD" engine | tee "$RUNNER_TEMP/engine-diff.txt" || true
+          printf '%s\n' \
+            "Files $ENGINE_PROD/dm/host/tests/Makefile and engine/dm/host/tests/Makefile differ" \
+            "Files $ENGINE_PROD/dm/ios/Sources/DmGamepad.m and engine/dm/ios/Sources/DmGamepad.m differ" \
+            "Only in engine/dm/host: pad_deadzone.h" \
+            "Only in engine/dm/host/tests: t_pad_deadzone.c" | sort > "$RUNNER_TEMP/expected-diff.txt"
+          sort "$RUNNER_TEMP/engine-diff.txt" | diff "$RUNNER_TEMP/expected-diff.txt" -
+          echo "only the four dead-zone files differ"
+          for e in "$ENGINE_PROD" engine; do
+            h=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$e/dm/gfx/nvn/dmsh_chain.h")
+            c=$(cd "$e" && python3 -I dm/gfx/tools/dmsh_chain.py 2>&1 | tail -1)
+            echo "$e: header $h, computed from the chain tools $c"
+            test "$h" = "$EXPECTED_CHAIN"
+            echo "$c" >> "$RUNNER_TEMP/computed.txt"
+          done
+          test "$(sort -u "$RUNNER_TEMP/computed.txt" | wc -l)" -eq 1
+          echo "shader chain $EXPECTED_CHAIN in both engines: the existing shader libraries (b-$EXPECTED_CHAIN) stay usable"
+
+      - name: C test t_pad_deadzone
+        working-directory: engine/dm/host/tests
+        run: |
+          xcrun clang -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o "$RUNNER_TEMP/t_pad_deadzone" t_pad_deadzone.c
+          "$RUNNER_TEMP/t_pad_deadzone"
+          xcrun clang -O2 -Wall -Wextra -Werror -Wno-unused-function -I.. -o "$RUNNER_TEMP/t_pad_deadzone_o2" t_pad_deadzone.c
+          "$RUNNER_TEMP/t_pad_deadzone_o2"
+          grep -q '^run: \$(B)/t_pad_deadzone' Makefile
+          echo "the tests Makefile builds and runs t_pad_deadzone (make -C dm/host/tests run)"
+
+      - name: Marker framework
+        run: |
+          CHAIN=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' engine/dm/gfx/nvn/dmsh_chain.h)
+          T=010015100B514000; FW="$RUNNER_TEMP/fw/DmGame$T.framework"; mkdir -p "$FW/dm"
+          echo '__attribute__((used, visibility("default"))) const char dmgame_image_marker[] = "DmGame";' > "$RUNNER_TEMP/marker.c"
+          xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -dynamiclib \
+            -install_name "@rpath/DmGame$T.framework/DmGame$T" "$RUNNER_TEMP/marker.c" -o "$FW/DmGame$T"
+          printf 'id\t%s\n' "$T" > "$FW/profile.tsv"
+          printf '{"schema":1,"game":"%s","settings":[]}\n' "$T" > "$FW/dm/launcher.json"
+          python3 - "$FW" "$T" "b-$CHAIN" <<'PY'
+          import json, plistlib, sys
+          fw, t, chain = sys.argv[1:]
+          exe = f'DmGame{t}'
+          json.dump({'schema': 1, 'title_id': t, 'name': 'Marker', 'display_version': '1.0', 'package_version': 'v0', 'modules': ['main'],
+                     'nro_count': 0, 'chain': chain, 'loader': 'FR', 'framework': f'{exe}.framework', 'framework_executable': exe,
+                     'image_marker': 'dmgame_image_marker', 'profile': 'profile.tsv', 'shader_map': 'dm/shader_map.tsv',
+                     'launcher': 'dm/launcher.json', 'romfs_marker': 'marker', 'romfs_identity': '', 'min_os': '26.0'},
+                    open(f'{fw}/game.manifest.json', 'w'))
+          plistlib.dump({'CFBundleExecutable': exe, 'CFBundleIdentifier': 'org.nxnative.shell.marker', 'CFBundleName': exe,
+                         'CFBundlePackageType': 'FMWK', 'CFBundleShortVersionString': '1.0', 'CFBundleVersion': '1.0',
+                         'CFBundleSupportedPlatforms': ['iPhoneOS'], 'MinimumOSVersion': '26.0'}, open(f'{fw}/Info.plist', 'wb'))
+          PY
+          echo "MARKER_FW=$FW" >> "$GITHUB_ENV"
+
+      - name: Shell compile (production settings)
+        env:
+          SHELL_DIR: ${{ runner.temp }}/shell
+          DM_SHELL_PACKAGE: ${{ github.workspace }}/frontend-ios
+          DM_BUNDLE_ID: local.iswitchduo.botw
+          DM_SHELL_NAME: NX2 Switch 2
+          DM_APP_VERSION: 1.4.21
+          STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
+        run: |
+          export DM_SHELL_FRAMEWORKS="$MARKER_FW"
+          export FONT_PY="$RUNNER_TEMP/font_py"
+          printf '#!/bin/bash\nexec "%s" "$@" "%s"\n' "$GITHUB_WORKSPACE/.venv/bin/python" "$STD_FONT" > "$FONT_PY"
+          chmod +x "$FONT_PY"
+          bash engine/dm/ios/tools/build_shell.sh --build || { tail -80 "$SHELL_DIR/build.log" || true; exit 1; }
+
+      - name: DmGamepad.m compiled with the dead zone, no warning in the changed files
+        env:
+          SHELL_DIR: ${{ runner.temp }}/shell
+        run: |
+          L="$SHELL_DIR/build.log"
+          grep -m3 -E 'Compile.*DmGamepad\.m' "$L" || true
+          grep -qE 'Compile.*DmGamepad\.m' "$L"
+          if grep -nE '(DmGamepad\.m|pad_deadzone\.h):[0-9]+:[0-9]+: (warning|error)' "$L"; then echo "warnings or errors in the changed files"; exit 1; fi
+          echo "no warning or error in DmGamepad.m or pad_deadzone.h"
+          APP="$SHELL_DIR/dd/Build/Products/Release-iphoneos/DmShell.app"
+          BIN=$(grep -rlaF 'controller sticks: circular dead zone' "$APP" | sed -n 1p)
+          test -n "$BIN"; echo "dead zone code linked in: ${BIN#$APP/}"
+          grep -qaF 'DM_PAD_DEADZONE' "$BIN"
+          grep -qraF "$EXPECTED_CHAIN" "$APP" && echo "the shell's host is built for shader chain $EXPECTED_CHAIN"
+          echo "warnings in the whole build: $(grep -cE ': warning:' "$L" || true)"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-logs
+          path: |
+            ${{ runner.temp }}/shell/build.log
+            ${{ runner.temp }}/engine-diff.txt
+          if-no-files-found: ignore
+          retention-days: 7
