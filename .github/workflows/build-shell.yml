@@ -23,6 +23,8 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
   EXPECTED_XCODE: Xcode 27.2
   NX2APPLE_COMMIT: 2f788d6b55192952dfacaf97f24700d7668610b6
+  NXNATIVE_REPOSITORY: cover93-95/nxnative
+  NXNATIVE_COMMIT: af06260267c8897853b361446a6202ce2ca16901
 
 defaults:
   run:
@@ -60,7 +62,10 @@ jobs:
           command -v xcodegen || brew install xcodegen
           python3 -m venv .venv
           .venv/bin/pip install fonttools==4.68.0
-          python3 tools/engine.py sync
+          git clone --filter=blob:none --no-checkout "https://github.com/$NXNATIVE_REPOSITORY.git" engine
+          git -C engine fetch --depth=1 origin "$NXNATIVE_COMMIT"
+          git -C engine checkout --detach FETCH_HEAD
+          test "$(git -C engine rev-parse HEAD)" = "$NXNATIVE_COMMIT"
 
       - name: Marker framework
         run: |
@@ -93,9 +98,9 @@ jobs:
           SHELL_DIR: ${{ runner.temp }}/shell
           DM_SHELL_PACKAGE: ${{ github.workspace }}/frontend-ios
 
-          DM_BUNDLE_ID: local.iswitchduo.hostm3
-          DM_SHELL_NAME: NX2Apple
-          DM_APP_VERSION: 1.1.0
+          DM_BUNDLE_ID: local.iswitchduo.botw
+          DM_SHELL_NAME: Ocarina
+          DM_APP_VERSION: 1.4.27
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
@@ -123,7 +128,7 @@ jobs:
           codesign -d --entitlements :- "$OUT/Payload/DmShell.app/DmShell" | grep increased-memory-limit
           (cd "$OUT" && zip -qry DmShell.ipa Payload)
           shasum -a 256 "$OUT/DmShell.ipa"
-          python3 -c "import json,os,subprocess; json.dump({'chain':os.environ['CHAIN'],'nx2apple':os.environ['NX2APPLE_COMMIT'],'xcode':subprocess.check_output(['xcodebuild','-version'],text=True)}, open(os.environ['RUNNER_TEMP']+'/out/shell.json','w'), indent=1)"
+          python3 -c "import json,os,subprocess; json.dump({'chain':os.environ['CHAIN'],'nx2apple':os.environ['NX2APPLE_COMMIT'],'nxnative':os.environ['NXNATIVE_COMMIT'],'xcode':subprocess.check_output(['xcodebuild','-version'],text=True)}, open(os.environ['RUNNER_TEMP']+'/out/shell.json','w'), indent=1)"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()

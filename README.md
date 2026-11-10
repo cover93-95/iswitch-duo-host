@@ -1,10 +1,10 @@
-# NX2Apple Host M3 — shell iOS v1.1
+# NX2Apple — shell iOS Ocarina 30 FPS
 
-Ce dépôt construit manuellement le shell partagé officiel de **NX2Apple v1.1.0**, vide de tout jeu, pour la mise à jour de l’installation Host M3.
+La branche `codex/ocarina-30fps-cool-shell` construit le shell Ocarina vide de tout jeu à partir du moteur corrigé `af062602`. Elle conserve la chaîne de shaders `b70f92017083`, le Bundle ID `local.iswitchduo.botw` et produit la version `1.4.27`.
 
 Le workflow est verrouillé sur une révision précise de NX2Apple et produit une IPA non signée avec :
 
-- le Bundle ID source `local.iswitchduo.hostm3` ;
+- le Bundle ID source `local.iswitchduo.botw` ;
 - l’entitlement `com.apple.developer.kernel.increased-memory-limit` ;
 - aucun framework `DmGame`, RomFS, shader, clé, certificat ou donnée Nintendo ;
 - une police libre Manrope incluse par NX2Apple.
