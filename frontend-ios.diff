@@ -3907,7 +3907,7 @@ index 1c29841..a647667 100644
          #expect(ShellFormat.version("") == "")
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..900703a
+index 0000000..960ba03
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 @@ -0,0 +1,168 @@
@@ -4046,7 +4046,7 @@ index 0000000..900703a
 +        app.buttons["platform.PS2"].tap()
 +        sleep(2)
 +        shot("web-02-library-ps2")
-+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.42)).tap()
++        app.buttons["qa.input.activate"].tap()   // A on the only PS2 game opens its box
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        shot("web-03-box-disc")
