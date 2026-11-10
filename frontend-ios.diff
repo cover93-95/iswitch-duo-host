@@ -493,7 +493,7 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..ea9a7d6 100644
+index 8651917..28fd89b 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -43,23 +43,25 @@ struct CoverFlowView: View, Equatable {
@@ -699,7 +699,7 @@ index 8651917..ea9a7d6 100644
  /// The way out for a game that cannot start, as one small tappable line in the state's colour: "How to fix ›".
  /// VoiceOver reads the state with it.
  struct StateAction: View {
-@@ -352,25 +458,44 @@ private struct FlowTilt: ViewModifier {
+@@ -352,25 +458,52 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -722,6 +722,7 @@ index 8651917..ea9a7d6 100644
 +                    Image(decorative: picture.image, scale: 1).resizable().interpolation(.high).scaledToFill()
 +                        .frame(width: geometry.size.width, height: geometry.size.height)
 +                        .clipped()
++                        .saturation(0.85)
 +                }
                  .id(game.id)
                  .transition(.opacity)
@@ -730,14 +731,21 @@ index 8651917..ea9a7d6 100644
 -                           startRadius: 80, endRadius: 900)
 -            LinearGradient(colors: [.black.opacity(0.25), .clear, ShellPalette.background.opacity(0.85)],
 -                           startPoint: .top, endPoint: .bottom)
-+                if !reduceMotion {
-+                    AmbienceLayer(kind: game.ambience).id(game.id).transition(.opacity)
-+                }
-+                // Only as dark as the type needs: the top bar, the edges a little, the title at the bottom.
++                // The picture is the setting, the cover is the subject: a veil over the whole picture, then a soft light
++                // behind the middle cover, so its tilt and depth stand out from the scene.
++                Color.black.opacity(0.40)
++                RadialGradient(colors: [.white.opacity(0.14), .white.opacity(0.05), .clear], center: .init(x: 0.5, y: 0.45),
++                               startRadius: 0, endRadius: 460)
++                    .blendMode(.plusLighter)
++                // Darker still at the top bar, the edges a little and the title at the bottom, for the type.
 +                RadialGradient(colors: [.clear, .black.opacity(0.35)], center: .init(x: 0.5, y: 0.45), startRadius: 200, endRadius: 1000)
 +                LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.18),
 +                                       .init(color: .clear, location: 0.55), .init(color: .black.opacity(0.75), location: 1)],
 +                               startPoint: .top, endPoint: .bottom)
++                // The particles over the veil: as bright as before, so the screen keeps its life.
++                if !reduceMotion {
++                    AmbienceLayer(kind: game.ambience).id(game.id).transition(.opacity)
++                }
 +            } else {
 +                ArtView(game: game, backdrop: true)
 +                    .scaleEffect(1.3)
