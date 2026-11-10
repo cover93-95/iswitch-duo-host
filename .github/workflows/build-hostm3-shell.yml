@@ -1,0 +1,157 @@
+# Construit le shell iOS sans aucune donnée de jeu. JAMAIS EXÉCUTÉ à ce jour : à valider au premier passage.
+# Le framework de construction est un marqueur d'un seul symbole, retiré de l'IPA finale.
+# Son identifiant est celui du test amont (test_shell_build.py) : l'hôte exige un profil texte existant dans dm/games.
+# Aucune police Apple dans l'app : Manrope (SIL OFL, fournie par NX2Apple) remplace Arial, y compris pour les lettres des icônes.
+# Ne jamais ajouter ici de fichier de jeu, de clé, ni rien qui en soit extrait.
+name: Build Host M3 shell
+
+on:
+  # Branche hostm3-shell du depot public (minutes gratuites) : chaque push construit le shell Host M3.
+  push:
+    branches:
+      - hostm3-shell
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+  EXPECTED_XCODE: Xcode 27.2
+  NX2APPLE_COMMIT: de0bb4072aa484acae3f08d8028159de1792fae8
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  toolchain:
+    name: Check the toolchain
+    runs-on: xcode-27   # Runner standard. Jamais xcode-27-xlarge, facturé à part.
+    timeout-minutes: 5
+    steps:
+      - name: Report and compare
+        run: |
+          sw_vers
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun -sdk iphoneos --show-sdk-version
+          test "$(xcodebuild -version | head -1)" = "$EXPECTED_XCODE"
+
+  shell:
+    name: Build the shell
+    needs: toolchain
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LNPANDY/NX2Apple
+          ref: ${{ env.NX2APPLE_COMMIT }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: own
+          persist-credentials: false
+
+      - name: Tools and engine
+        run: |
+          command -v xcodegen || brew install xcodegen
+          python3 -m venv .venv
+          .venv/bin/pip install fonttools==4.68.0
+          python3 tools/engine.py sync
+          # Meme chaine de shaders que les 4 jeux installes (Host M3) : les frameworks existants restent compatibles.
+          grep -q '"e047be1b6829"' engine/dm/gfx/nvn/dmsh_chain.h
+          # Bibliotheque : boites de jeu debout, reflets, selection lumineuse (interface seulement, aucune donnee de jeu).
+          git apply "$GITHUB_WORKSPACE/own/frontend-ios.diff"
+          # Manettes physiques : zone morte circulaire des sticks (DM_PAD_DEADZONE, 5 % par defaut, 0 = desactivee), hote seulement.
+          git -C engine apply "$GITHUB_WORKSPACE/own/engine-pad.diff"
+          # La chaine de shaders ne change pas : les frameworks installes restent compatibles.
+          grep -q '"e047be1b6829"' engine/dm/gfx/nvn/dmsh_chain.h
+
+      - name: C tests (controller stick dead zone)
+        working-directory: engine/dm/host/tests
+        run: |
+          # DM_PAD_DEADZONE (dm/host/pad_deadzone.h) : centre, petites inclinaisons, diagonales, maximum, 0 = valeurs d'avant, lecture. Le shell n'est pas construit en cas d'echec.
+          xcrun clang -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o "$RUNNER_TEMP/t_pad_deadzone" t_pad_deadzone.c
+          "$RUNNER_TEMP/t_pad_deadzone"
+          xcrun clang -O2 -Wall -Wextra -Werror -Wno-unused-function -I.. -o "$RUNNER_TEMP/t_pad_deadzone_o2" t_pad_deadzone.c
+          "$RUNNER_TEMP/t_pad_deadzone_o2"
+
+      - name: Marker framework
+        run: |
+          CHAIN=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' engine/dm/gfx/nvn/dmsh_chain.h)
+          test -n "$CHAIN"
+          echo "CHAIN=$CHAIN" >> "$GITHUB_ENV"
+          T=010015100B514000; FW="$RUNNER_TEMP/fw/DmGame$T.framework"; mkdir -p "$FW/dm"
+          echo '__attribute__((used, visibility("default"))) const char dmgame_image_marker[] = "DmGame";' > "$RUNNER_TEMP/marker.c"
+          xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -dynamiclib \
+            -install_name "@rpath/DmGame$T.framework/DmGame$T" "$RUNNER_TEMP/marker.c" -o "$FW/DmGame$T"
+          printf 'id\t%s\n' "$T" > "$FW/profile.tsv"
+          printf '{"schema":1,"game":"%s","settings":[]}\n' "$T" > "$FW/dm/launcher.json"
+          python3 - "$FW" "$T" "b-$CHAIN" <<'PY'
+          import json, plistlib, sys
+          fw, t, chain = sys.argv[1:]
+          exe = f'DmGame{t}'
+          json.dump({'schema': 1, 'title_id': t, 'name': 'Marker', 'display_version': '1.0', 'package_version': 'v0', 'modules': ['main'],
+                     'nro_count': 0, 'chain': chain, 'loader': 'FR', 'framework': f'{exe}.framework', 'framework_executable': exe,
+                     'image_marker': 'dmgame_image_marker', 'profile': 'profile.tsv', 'shader_map': 'dm/shader_map.tsv',
+                     'launcher': 'dm/launcher.json', 'romfs_marker': 'marker', 'romfs_identity': '', 'min_os': '26.0'},
+                    open(f'{fw}/game.manifest.json', 'w'))
+          plistlib.dump({'CFBundleExecutable': exe, 'CFBundleIdentifier': 'org.nxnative.shell.marker', 'CFBundleName': exe,
+                         'CFBundlePackageType': 'FMWK', 'CFBundleShortVersionString': '1.0', 'CFBundleVersion': '1.0',
+                         'CFBundleSupportedPlatforms': ['iPhoneOS'], 'MinimumOSVersion': '26.0'}, open(f'{fw}/Info.plist', 'wb'))
+          PY
+          echo "MARKER_FW=$FW" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          SHELL_DIR: ${{ runner.temp }}/shell
+          DM_SHELL_PACKAGE: ${{ github.workspace }}/frontend-ios
+          STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
+        run: |
+          export DM_SHELL_FRAMEWORKS="$MARKER_FW"
+          # build_shell.sh appelle FONT_PY depuis SHELL_DIR, sans police de lettres : chemin absolu, et Manrope ajoutée en dernier argument.
+          export FONT_PY="$RUNNER_TEMP/font_py"
+          printf '#!/bin/bash\nexec "%s" "$@" "%s"\n' "$GITHUB_WORKSPACE/.venv/bin/python" "$STD_FONT" > "$FONT_PY"
+          chmod +x "$FONT_PY"
+          bash engine/dm/ios/tools/build_shell.sh --build || { tail -50 "$SHELL_DIR/build.log" || true; exit 1; }
+
+      - name: Package without the marker
+        env:
+          SHELL_DIR: ${{ runner.temp }}/shell
+        run: |
+          APP="$SHELL_DIR/dd/Build/Products/Release-iphoneos/DmShell.app"
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT/Payload"; cp -R "$APP" "$OUT/Payload/"
+          rm -rf "$OUT/Payload/DmShell.app/Frameworks/$(basename "$MARKER_FW")"
+          # Refuser l'IPA si elle contient un marqueur de jeu ou une police Apple.
+          test -z "$(find "$OUT/Payload" -name 'DmGame*' -print -quit)"
+          cmp "$OUT/Payload/DmShell.app/dm/font/standard.ttf" frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
+          if grep -aqi 'arial' "$OUT/Payload/DmShell.app/dm/font/nintendo_ext.ttf"; then exit 1; fi
+          test -n "$(find "$OUT/Payload" -name 'Manrope-OFL.txt' -print -quit)"
+          (cd "$OUT/Payload" && find . -type f -exec stat -f '%z %N' {} + | sort -k2) > "$OUT/files.txt"
+          # Signature de substitution : le signataire y lit l'entitlement à conserver.
+          codesign --force --sign - --entitlements "$SHELL_DIR/Gen/DmShell.entitlements" "$OUT/Payload/DmShell.app/DmShell"
+          codesign -d --entitlements :- "$OUT/Payload/DmShell.app/DmShell" | grep increased-memory-limit
+          (cd "$OUT" && zip -qry DmShell.ipa Payload)
+          shasum -a 256 "$OUT/DmShell.ipa"
+          python3 -c "import json,os,subprocess; json.dump({'chain':os.environ['CHAIN'],'nx2apple':os.environ['NX2APPLE_COMMIT'],'xcode':subprocess.check_output(['xcodebuild','-version'],text=True)}, open(os.environ['RUNNER_TEMP']+'/out/shell.json','w'), indent=1)"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/shell/build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DmShell
+          path: |
+            ${{ runner.temp }}/out/DmShell.ipa
+            ${{ runner.temp }}/out/shell.json
+            ${{ runner.temp }}/out/files.txt
+          if-no-files-found: error
+          retention-days: 7
