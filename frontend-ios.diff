@@ -1,0 +1,3416 @@
+diff --git a/frontend-ios/Sources/ShellDemo/SampleData.swift b/frontend-ios/Sources/ShellDemo/SampleData.swift
+index ac4358f..33aea22 100644
+--- a/frontend-ios/Sources/ShellDemo/SampleData.swift
++++ b/frontend-ios/Sources/ShellDemo/SampleData.swift
+@@ -27,7 +27,7 @@ func demoText(_ key: String.LocalizationValue) -> String {
+             // Always fictional: the icon-only fallback, a square icon inside a wide card.
+             SampleArt.tile("amber", title: "Amber Hours", version: "1.0.2", real: nil)
+         ]
+-        return tiles.map { tile in
++        return tiles.map(withStats).map { tile in
+             GameDetail(game: tile, sections: [
+                 SettingSection(id: "game", title: demoText("Game"), rows: [
+                     SettingRow(id: "DM_OPERATION_MODE", label: demoText("Play mode"), note: demoText("The game's display and performance profile."), kind: .choice([SettingOption("handheld", demoText("Handheld")), SettingOption("docked", demoText("Docked"))]), value: "handheld"),
+@@ -47,6 +47,22 @@ func demoText(_ key: String.LocalizationValue) -> String {
+                        cloudFromShell: tile.id == "orbit")
+         }
+     }
++    /// Sample play statistics for the info panel: the two recently played games have some, the rest none yet.
++    private static func withStats(_ tile: GameTile) -> GameTile {
++        var tile = tile
++        switch tile.id {
++        case "orbit":
++            tile.stats = PlayStats(launches: 9, seconds: 3 * 3600 + 25 * 60, lastPlayed: Date())
++            tile.backdrop = tile.banner ?? tile.icon   // the demo has no world picture: its own art stands in, sharp
++            // --still: no particles, for the UI tests that tap a lot (an endless animation keeps the app from going idle between taps)
++            if !ProcessInfo.processInfo.arguments.contains("--still") { tile.ambience = .sparkles }
++            tile.synopsis = demoText("A valley of floating islands, a lost compass and a sky that never stays still. Climb, glide and solve old shrines to bring the orbit back.")
++            tile.screens = SampleScreens.files(for: tile.id)
++        case "tide": tile.stats = PlayStats(launches: 2, seconds: 47 * 60, lastPlayed: Date().addingTimeInterval(-86_400))
++        default: break
++        }
++        return tile
++    }
+     static let controllers = [
+         ControllerInfo(id: "one", name: demoText("Pro Controller"), player: demoText("Player 1"), batteryPercent: 78),
+         ControllerInfo(id: "two", name: demoText("Wireless Controller"), player: demoText("Player 2"), batteryPercent: 16, charging: true),
+diff --git a/frontend-ios/Sources/ShellDemo/SampleScreens.swift b/frontend-ios/Sources/ShellDemo/SampleScreens.swift
+new file mode 100644
+index 0000000..8a1e9e6
+--- /dev/null
++++ b/frontend-ios/Sources/ShellDemo/SampleScreens.swift
+@@ -0,0 +1,42 @@
++import SwiftUI
++import ImageIO
++import UniformTypeIdentifiers
++
++/// Fictional screenshots for the demo's info panel: drawn scenes written once as PNG files to the temporary folder, since the
++/// panel takes files (as the host gives it the game's `screens/`).
++@MainActor enum SampleScreens {
++    static func files(for id: String) -> [URL] {
++        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("demo-screens/\(id)", isDirectory: true)
++        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
++        let skies: [(Color, Color)] = [(.orange, .purple), (.cyan, .blue), (.pink, .indigo), (.mint, .teal), (.yellow, .red)]
++        return skies.enumerated().compactMap { index, sky in
++            let url = folder.appendingPathComponent("\(index + 1).png")
++            if FileManager.default.fileExists(atPath: url.path) { return url }
++            let renderer = ImageRenderer(content: Scene(top: sky.0, bottom: sky.1, number: index + 1))
++            renderer.scale = 1
++            guard let image = renderer.cgImage,
++                  let out = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { return nil }
++            CGImageDestinationAddImage(out, image, nil)
++            return CGImageDestinationFinalize(out) ? url : nil
++        }
++    }
++
++    private struct Scene: View {
++        let top: Color
++        let bottom: Color
++        let number: Int
++        var body: some View {
++            ZStack(alignment: .bottom) {
++                LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
++                Circle().fill(.white.opacity(0.85)).frame(width: 120).offset(x: CGFloat(number * 90) - 300, y: -420)
++                Ellipse().fill(.black.opacity(0.35)).frame(width: 1400, height: 420).offset(x: -260, y: 170)
++                Ellipse().fill(.black.opacity(0.55)).frame(width: 1200, height: 360).offset(x: 380, y: 200)
++                Text(verbatim: "\(number)").font(.system(size: 64, weight: .heavy, design: .rounded))
++                    .foregroundStyle(.white.opacity(0.8)).padding(36)
++                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
++            }
++            .frame(width: 1280, height: 720)
++            .clipped()
++        }
++    }
++}
+diff --git a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
+index 5b7eba5..7cc42ef 100644
+--- a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
++++ b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
+@@ -90,7 +90,8 @@ struct DemoScreen: View {
+                     padSnapshot: padSnapshot ?? (scenario == "controllers-test"
+                         ? PadSnapshot(name: "Demo", pressed: [.a, .leftBumper, .up], leftStick: CGPoint(x: 0.6, y: 0.5), rightTrigger: 0.7) : nil),
+                     initialPadMapping: scenario == "controllers-mapping" ? ControllersView.mappingID : nil,
+-                    initialButtonTestOpen: scenario == "controllers-test")
++                    initialButtonTestOpen: scenario == "controllers-test",
++                    initialInfoOpen: scenario == "info", initialBoxOpen: scenario == "box")
+     }
+ 
+     /// A stand-in for the foldable while no Simulator runtime for it is installed: the same running shell in a frame
+diff --git a/frontend-ios/Sources/ShellHost/GameCatalogue.swift b/frontend-ios/Sources/ShellHost/GameCatalogue.swift
+index 17a15dd..f26980e 100644
+--- a/frontend-ios/Sources/ShellHost/GameCatalogue.swift
++++ b/frontend-ios/Sources/ShellHost/GameCatalogue.swift
+@@ -27,6 +27,14 @@ public struct CatalogueEntry: Equatable, Sendable, Identifiable {
+     public var profile: LauncherProfile?
+     public var bannerURL: URL?
+     public var iconURL: URL?
++    /// The optional full-screen picture behind the library while the game is chosen: `backdrop.<ext>` beside the banner.
++    public var backdropURL: URL?
++    /// The word in `ambience.txt` beside the banner: the particles over the backdrop (see `Ambience`).
++    public var ambienceText: String?
++    /// The game's screenshots for its info panel: the pictures in `screens/` beside the banner, in name order, at most 8.
++    public var screenURLs: [URL] = []
++    /// The text of `synopsis.txt` beside the banner: a few lines about the game for its info panel.
++    public var synopsis: String?
+     /// Set when the bundle cannot run at all, whatever the app or the data: the broken state.
+     public var problem: GameProblem?
+ 
+@@ -71,6 +79,10 @@ public enum GameCatalogue {
+     public static func read(directory dir: URL, fileManager fm: FileManager = .default) -> CatalogueEntry {
+         let id = dir.lastPathComponent
+         var entry = CatalogueEntry(id: id, directory: dir, bannerURL: image(named: "banner", in: dir, fm), iconURL: image(named: "icon", in: dir, fm))
++        entry.backdropURL = image(named: "backdrop", in: dir, fm)
++        entry.ambienceText = fm.contents(atPath: dir.appendingPathComponent("ambience.txt").path).flatMap { String(data: $0.prefix(64), encoding: .utf8) }
++        entry.screenURLs = screens(in: dir, fm)
++        entry.synopsis = synopsis(in: dir, fm)
+         entry.readableName = lenientName(in: dir.appendingPathComponent("game.manifest.json"), fm)
+         do {
+             guard let data = fm.contents(atPath: dir.appendingPathComponent("game.manifest.json").path) else {
+@@ -114,6 +126,10 @@ public enum GameCatalogue {
+         let fallbackID = String(folder.dropLast(".framework".count))
+         let manifestURL = fw.appendingPathComponent("game.manifest.json")
+         var entry = CatalogueEntry(id: fallbackID, directory: fw, bannerURL: image(named: "banner", in: fw, fm), iconURL: image(named: "icon", in: fw, fm))
++        entry.backdropURL = image(named: "backdrop", in: fw, fm)
++        entry.ambienceText = fm.contents(atPath: fw.appendingPathComponent("ambience.txt").path).flatMap { String(data: $0.prefix(64), encoding: .utf8) }
++        entry.screenURLs = screens(in: fw, fm)
++        entry.synopsis = synopsis(in: fw, fm)
+         entry.readableName = lenientName(in: manifestURL, fm)
+         do {
+             guard let data = fm.contents(atPath: manifestURL.path) else {
+@@ -167,6 +183,23 @@ public enum GameCatalogue {
+     private static func image(named base: String, in dir: URL, _ fm: FileManager) -> URL? {
+         imageExtensions.map { dir.appendingPathComponent("\(base).\($0)") }.first { fm.fileExists(atPath: $0.path) }
+     }
++
++    /// The pictures in the folder's `screens/`, in name order (2 before 10), at most 8. Only listed here: the panel decodes them
++    /// when it shows them.
++    static func screens(in dir: URL, _ fm: FileManager) -> [URL] {
++        let folder = dir.appendingPathComponent("screens", isDirectory: true)
++        guard let names = try? fm.contentsOfDirectory(atPath: folder.path) else { return [] }
++        return names.filter { imageExtensions.contains(($0 as NSString).pathExtension.lowercased()) && !$0.hasPrefix(".") }
++            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
++            .prefix(8).map { folder.appendingPathComponent($0) }
++    }
++
++    /// The folder's `synopsis.txt`, trimmed, at most 4,000 bytes. Nil when there is none or it is empty.
++    static func synopsis(in dir: URL, _ fm: FileManager) -> String? {
++        guard let data = fm.contents(atPath: dir.appendingPathComponent("synopsis.txt").path) else { return nil }
++        let text = String(decoding: data.prefix(4000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
++        return text.isEmpty ? nil : text
++    }
+ }
+ 
+ /// Where a game's data was found.
+diff --git a/frontend-ios/Sources/ShellHost/PlayStatsStore.swift b/frontend-ios/Sources/ShellHost/PlayStatsStore.swift
+new file mode 100644
+index 0000000..4ac066c
+--- /dev/null
++++ b/frontend-ios/Sources/ShellHost/PlayStatsStore.swift
+@@ -0,0 +1,58 @@
++import Foundation
++import ShellUI
++
++/// A game's launches and time played, in the game's own defaults suite next to the last-played date, under keys of their own,
++/// so Reset to tested defaults keeps them.
++///
++/// The shell does not see a game end: the app becomes the game and is closed from the app switcher. So a session is kept open
++/// from Play, the shell marks it alive every half minute while the game runs (the main run loop keeps turning under the game),
++/// and the next time the library loads, the session is closed at the last sign of life: that mark, or the engine log's last
++/// write, whichever is later. A session longer than `longest` is not believed and counts as `longest`.
++public struct PlayStatsStore {
++    public static let launchesKey = "shell.launches"
++    public static let secondsKey = "shell.playSeconds"
++    public static let startKey = "shell.sessionStart"
++    public static let aliveKey = "shell.sessionAlive"
++    public static let longest: TimeInterval = 12 * 3600
++    private let defaults: UserDefaults
++    public init(defaults: UserDefaults) { self.defaults = defaults }
++
++    public var launches: Int { defaults.integer(forKey: Self.launchesKey) }
++    /// The closed sessions together.
++    public var seconds: TimeInterval { defaults.double(forKey: Self.secondsKey) }
++    /// When the session not closed yet began.
++    public var openSession: Date? { defaults.object(forKey: Self.startKey) as? Date }
++
++    /// Play: one more launch and a new session. A session still open is closed first, at its own last mark.
++    public func begin(_ now: Date) {
++        settle(lastSign: nil)
++        defaults.set(launches + 1, forKey: Self.launchesKey)
++        defaults.set(now, forKey: Self.startKey)
++        defaults.set(now, forKey: Self.aliveKey)
++    }
++
++    /// The game is still running.
++    public func alive(_ now: Date) {
++        guard openSession != nil else { return }
++        defaults.set(now, forKey: Self.aliveKey)
++    }
++
++    /// The game did not start after all: the launch and its session are taken back.
++    public func cancel() {
++        guard openSession != nil else { return }
++        defaults.set(max(0, launches - 1), forKey: Self.launchesKey)
++        defaults.removeObject(forKey: Self.startKey)
++        defaults.removeObject(forKey: Self.aliveKey)
++    }
++
++    /// Closes the open session at its last sign of life: the alive mark or `lastSign` (the engine log's last write), the later
++    /// one. A sign before the session began is not this session's and is ignored.
++    public func settle(lastSign: Date?) {
++        guard let start = openSession else { return }
++        let marks = [defaults.object(forKey: Self.aliveKey) as? Date, lastSign].compactMap { $0 }.filter { $0 >= start }
++        let length = min(Self.longest, max(0, (marks.max() ?? start).timeIntervalSince(start)))
++        defaults.set(seconds + length, forKey: Self.secondsKey)
++        defaults.removeObject(forKey: Self.startKey)
++        defaults.removeObject(forKey: Self.aliveKey)
++    }
++}
+diff --git a/frontend-ios/Sources/ShellHost/ShellHostModel.swift b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
+index 02898cb..71bf701 100644
+--- a/frontend-ios/Sources/ShellHost/ShellHostModel.swift
++++ b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
+@@ -79,6 +79,10 @@ public struct ShellHostConfig: Sendable {
+     @ObservationIgnored private var shellMatches: [String: URL] = [:]
+     @ObservationIgnored private var shellScan: Task<Void, Never>?
+     @ObservationIgnored nonisolated(unsafe) private var defaultsObserver: (any NSObjectProtocol)?
++    /// The sessions of games played before this launch of the app are closed once, at the first load.
++    @ObservationIgnored private var sessionsSettled = false
++    /// Marks the running game's session alive every half minute (see `PlayStatsStore`).
++    @ObservationIgnored private var sessionTimer: Timer?
+ 
+     public init(config: ShellHostConfig, launcher: any GameLauncher = StubGameLauncher(), picker: any FolderPicker = NoFolderPicker(),
+                 shellSettings: ShellSettingsStore = .current) {
+@@ -154,6 +158,13 @@ public struct ShellHostConfig: Sendable {
+     /// a change to one game updates it in place.
+     public func reload() {
+         let scanned = GameCatalogue.scan(root: config.gamesRoot).filter { !isDeleted($0) }
++        if !sessionsSettled {
++            // The first load after the app started: a game played before was closed with the app, so its session ends at its last
++            // sign of life. Only here: a reload while a game runs must not close its session.
++            sessionsSettled = true
++            let logWritten = (try? FileManager.default.attributesOfItem(atPath: engineLogURL.path))?[.modificationDate] as? Date
++            for entry in scanned { PlayStatsStore(defaults: config.defaults(entry.id)).settle(lastSign: logWritten) }
++        }
+         let built = scanned.map(detail(for:))
+         let order = LibraryOrder.ids(of: built.map(\.game), lastPlayed: Dictionary(uniqueKeysWithValues: scanned.compactMap { e in
+             lastPlayed(e.id).map { (e.id, $0) } }))
+@@ -164,6 +175,12 @@ public struct ShellHostConfig: Sendable {
+     }
+ 
+     private func lastPlayed(_ id: String) -> Date? { LastPlayedStore(defaults: config.defaults(id)).date }
++    /// `Documents/log.txt`, which the engine writes while a game runs (see `EngineLaunchPlan`).
++    private var engineLogURL: URL { config.appDataRoot.deletingLastPathComponent().appendingPathComponent("log.txt") }
++    private func stats(_ id: String) -> PlayStats {
++        let store = PlayStatsStore(defaults: config.defaults(id))
++        return PlayStats(launches: store.launches, seconds: store.seconds, lastPlayed: lastPlayed(id))
++    }
+ 
+     private func refresh(_ id: String) {
+         guard let e = entries.firstIndex(where: { $0.id == id }), let d = details.firstIndex(where: { $0.id == id }) else { return }
+@@ -209,6 +226,16 @@ public struct ShellHostConfig: Sendable {
+                                   global: shellData.resolve(), shellMatch: shellMatches[manifest.titleID])
+     }
+ 
++    /// A game's backdrop, decoded at most 2048 pixels across: it fills the screen and no more, and it stays in memory while the
++    /// library is open.
++    private func backdropImage(_ url: URL?) -> Artwork? {
++        guard let url else { return nil }
++        if let a = artwork[url] { return a }
++        guard let a = Artwork(id: url.path, url: url, maxPixels: 2048) else { return nil }
++        artwork[url] = a
++        return a
++    }
++
+     private func image(_ url: URL?) -> Artwork? {
+         guard let url else { return nil }
+         if let a = artwork[url] { return a }
+@@ -223,7 +250,9 @@ public struct ShellHostConfig: Sendable {
+         let played = lastPlayed(entry.id)
+         let tile = GameTile(id: entry.id, title: entry.title, subtitle: entry.manifest.map { ShellFormat.version($0.displayVersion) } ?? "",
+                             banner: image(entry.bannerURL), icon: image(entry.iconURL), state: state,
+-                            recentlyPlayed: played.map { ShellFormat.played($0, now: config.now()) })
++                            recentlyPlayed: played.map { ShellFormat.played($0, now: config.now()) }, stats: stats(entry.id),
++                            backdrop: backdropImage(entry.backdropURL), ambience: Ambience(text: entry.ambienceText),
++                            screens: entry.screenURLs, synopsis: entry.synopsis ?? "")
+         guard let profile = entry.profile, entry.problem == nil else {
+             return GameDetail(game: tile, dataNote: dataNote(data, found: false))
+         }
+@@ -454,12 +483,30 @@ public struct ShellHostConfig: Sendable {
+         }
+         // Remembered when Play is triggered, even if the launcher then fails (the stub). The order changes at the next load.
+         LastPlayedStore(defaults: config.defaults(id)).record(config.now())
++        startSession(id)
+         refresh(id)
+         let game = LaunchableGame(
+             titleID: id, name: entry.title, manifest: manifest, directory: entry.directory, frameworkURL: framework, dataURL: dataURL,
+             appFolder: appFolder(for: id), environment: launchEnvironment(profile: profile, id: id), cloudSavesURL: cloud)
+         do { try await launcher.launch(game) }
+-        catch { notice = error.localizedDescription }
++        catch {
++            // Not started: no launch and no time to count.
++            sessionTimer?.invalidate()
++            sessionTimer = nil
++            PlayStatsStore(defaults: config.defaults(id)).cancel()
++            refresh(id)
++            notice = error.localizedDescription
++        }
++    }
++
++    /// Opens the game's play session and keeps it marked alive while the game runs (see `PlayStatsStore`).
++    private func startSession(_ id: String) {
++        PlayStatsStore(defaults: config.defaults(id)).begin(config.now())
++        sessionTimer?.invalidate()
++        let defaults = config.defaults, now = config.now
++        sessionTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
++            PlayStatsStore(defaults: defaults(id)).alive(now())
++        }
+     }
+ 
+     /// A game's values for the engine: its own choices, then the shell's defaults. A game whose settings list has no
+diff --git a/frontend-ios/Sources/ShellUI/AmbienceLayer.swift b/frontend-ios/Sources/ShellUI/AmbienceLayer.swift
+new file mode 100644
+index 0000000..3e801ea
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/AmbienceLayer.swift
+@@ -0,0 +1,159 @@
++import SwiftUI
++
++/// A game's ambience: a few slow particles over its backdrop, chosen per game (`ambience.txt` in its framework). Off with
++/// Reduce Motion. Drawn only while the library is on screen: when a game starts, the window's root becomes the game view and
++/// this view, with its timeline, is gone.
++public enum Ambience: String, Equatable, Sendable, CaseIterable {
++    case none
++    /// Golden sparkles that rise and twinkle.
++    case sparkles
++    /// Pale motes that float, a little ghostly.
++    case dust
++    /// Soft clouds that drift across.
++    case clouds
++    /// Violet shards that rise and turn.
++    case shards
++    /// An old film's grain, with a scratch now and then.
++    case grain
++
++    /// The word in `ambience.txt`, any case, spaces and line ends ignored. Anything else is none.
++    public init(text: String?) {
++        self = Ambience(rawValue: (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ?? .none
++    }
++}
++
++struct AmbienceLayer: View {
++    let kind: Ambience
++    var body: some View {
++        if kind != .none {
++            TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
++                Canvas { context, size in
++                    let t = timeline.date.timeIntervalSinceReferenceDate
++                    switch kind {
++                    case .sparkles: Self.sparkles(&context, size, t)
++                    case .dust: Self.dust(&context, size, t)
++                    case .clouds: Self.clouds(&context, size, t)
++                    case .shards: Self.shards(&context, size, t)
++                    case .grain: Self.grain(&context, size, t)
++                    case .none: break
++                    }
++                }
++            }
++            .allowsHitTesting(false)
++            .accessibilityHidden(true)
++        }
++    }
++
++    /// A fixed pseudo-random number in 0..<1 for particle `i` and property `k`: the same every frame, so nothing is stored.
++    static func noise(_ i: Int, _ k: Int) -> Double {
++        let v = sin(Double(i) * 12.9898 + Double(k) * 78.233) * 43758.5453
++        return v - v.rounded(.down)
++    }
++    /// `v` wrapped into 0..<1.
++    static func wrap(_ v: Double) -> Double { v - v.rounded(.down) }
++
++    private static func glow(_ context: inout GraphicsContext, at p: CGPoint, radius r: CGFloat, color: Color, alpha: Double) {
++        let rect = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
++        context.fill(Path(ellipseIn: rect), with: .radialGradient(Gradient(colors: [color.opacity(alpha), color.opacity(0)]),
++                                                                    center: p, startRadius: 0, endRadius: r))
++    }
++
++    static func sparkles(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        let gold = Color(red: 1, green: 0.86, blue: 0.45)
++        let unit = min(size.width, size.height)
++        for i in 0..<26 {
++            let speed = 0.012 + noise(i, 1) * 0.02
++            let y = wrap(noise(i, 2) - t * speed)
++            let x = noise(i, 3) + sin(t * 0.4 + noise(i, 4) * 6.28) * 0.012
++            let twinkle = pow(0.5 + 0.5 * sin(t * (1.5 + noise(i, 5) * 2) + noise(i, 6) * 6.28), 3)
++            let fade = min(1, min(y, 1 - y) * 6)   // in and out at the edges
++            let alpha = twinkle * fade
++            guard alpha > 0.02 else { continue }
++            let p = CGPoint(x: x * size.width, y: y * size.height)
++            let r = unit * (0.006 + noise(i, 7) * 0.008)
++            glow(&context, at: p, radius: r * 4, color: gold, alpha: 0.35 * alpha)
++            var star = Path()
++            star.move(to: CGPoint(x: p.x - r * 2.2, y: p.y)); star.addLine(to: CGPoint(x: p.x + r * 2.2, y: p.y))
++            star.move(to: CGPoint(x: p.x, y: p.y - r * 2.2)); star.addLine(to: CGPoint(x: p.x, y: p.y + r * 2.2))
++            context.stroke(star, with: .color(.white.opacity(0.9 * alpha)), lineWidth: max(1, r * 0.35))
++            context.fill(Path(ellipseIn: CGRect(x: p.x - r * 0.6, y: p.y - r * 0.6, width: r * 1.2, height: r * 1.2)),
++                         with: .color(.white.opacity(alpha)))
++        }
++    }
++
++    static func dust(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        let pale = Color(red: 0.75, green: 0.9, blue: 1)
++        let unit = min(size.width, size.height)
++        for i in 0..<36 {
++            let x = wrap(noise(i, 1) + t * (0.004 + noise(i, 2) * 0.006) + sin(t * 0.3 + noise(i, 3) * 6.28) * 0.02)
++            let y = wrap(noise(i, 4) - t * (0.003 + noise(i, 5) * 0.004) + cos(t * 0.25 + noise(i, 6) * 6.28) * 0.02)
++            let alpha = 0.25 + 0.35 * (0.5 + 0.5 * sin(t * (0.6 + noise(i, 7)) + noise(i, 8) * 6.28))
++            let r = unit * (0.004 + noise(i, 9) * 0.01)
++            glow(&context, at: CGPoint(x: x * size.width, y: y * size.height), radius: r * 3, color: pale, alpha: alpha)
++        }
++    }
++
++    static func clouds(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        for i in 0..<7 {
++            let w = size.width * (0.3 + noise(i, 1) * 0.35)
++            let h = w * (0.18 + noise(i, 2) * 0.1)
++            let span = size.width + w
++            let x = wrap(noise(i, 3) + t * (0.004 + noise(i, 4) * 0.006)) * span - w
++            let y = size.height * (0.08 + noise(i, 5) * 0.75)
++            let alpha = 0.10 + noise(i, 6) * 0.10
++            let rect = CGRect(x: x, y: y, width: w, height: h)
++            context.fill(Path(ellipseIn: rect), with: .radialGradient(Gradient(colors: [.white.opacity(alpha), .white.opacity(0)]),
++                                                                      center: CGPoint(x: rect.midX, y: rect.midY), startRadius: 0,
++                                                                      endRadius: w / 2))
++        }
++    }
++
++    static func shards(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        let colors = [Color(red: 0.85, green: 0.45, blue: 1), Color(red: 1, green: 0.55, blue: 0.85), Color(red: 0.6, green: 0.5, blue: 1)]
++        let unit = min(size.width, size.height)
++        for i in 0..<24 {
++            let y = wrap(noise(i, 1) - t * (0.01 + noise(i, 2) * 0.018))
++            let x = noise(i, 3) + sin(t * 0.35 + noise(i, 4) * 6.28) * 0.02
++            let fade = min(1, min(y, 1 - y) * 5)
++            let alpha = (0.35 + 0.45 * (0.5 + 0.5 * sin(t * 2 + noise(i, 5) * 6.28))) * fade
++            let r = unit * (0.006 + noise(i, 6) * 0.012)
++            let angle = t * (0.6 + noise(i, 7)) + noise(i, 8) * 6.28
++            let p = CGPoint(x: x * size.width, y: y * size.height)
++            let color = colors[i % colors.count]
++            glow(&context, at: p, radius: r * 3, color: color, alpha: 0.3 * alpha)
++            var shard = Path()
++            for k in 0..<4 {
++                let a = angle + Double(k) * .pi / 2
++                let len = k % 2 == 0 ? r * 1.6 : r * 0.6
++                let q = CGPoint(x: p.x + cos(a) * len, y: p.y + sin(a) * len)
++                if k == 0 { shard.move(to: q) } else { shard.addLine(to: q) }
++            }
++            shard.closeSubpath()
++            context.fill(shard, with: .color(color.opacity(alpha)))
++        }
++    }
++
++    static func grain(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        let frame = Int(t * 18)   // the grain changes 18 times a second, as film would
++        for i in 0..<140 {
++            let n = frame * 151 + i
++            let p = CGPoint(x: noise(n, 1) * size.width, y: noise(n, 2) * size.height)
++            let r = 0.6 + noise(n, 3) * 1.6
++            let light = noise(n, 4) > 0.5
++            context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)),
++                         with: .color((light ? Color.white : Color.black).opacity(0.10 + noise(n, 5) * 0.12)))
++        }
++        // A scratch for a few frames every few seconds.
++        let beat = Int(t / 2.7)
++        if noise(beat, 9) > 0.45, wrap(t / 2.7) < 0.12 {
++            let x = noise(beat, 10) * size.width
++            var line = Path()
++            line.move(to: CGPoint(x: x, y: 0))
++            line.addLine(to: CGPoint(x: x + (noise(beat, 11) - 0.5) * 12, y: size.height))
++            context.stroke(line, with: .color(.white.opacity(0.18)), lineWidth: 1)
++        }
++        // The slight flicker of a projector.
++        let flicker = 0.025 * (0.5 + 0.5 * sin(t * 23))
++        context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(flicker)))
++    }
++}
+diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
+index 8651917..ea9a7d6 100644
+--- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
++++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
+@@ -43,23 +43,25 @@ struct CoverFlowView: View, Equatable {
+             // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
+             // bottom edge, and never so wide that the neighbours vanish.
+             let height = geometry.size.height
+-            let middle = (height + screenInsets.top + screenInsets.bottom) / 2 - screenInsets.top
+             let gap: CGFloat = short ? 10 : 24
+             let words = Self.infoHeight(short: short)
+             let below: CGFloat = short ? 4 : 56          // the hint row on a tablet, a margin on a phone
+-            let byBottom = 2 * (height - middle - gap - words - below)
+-            let byTop = 2 * (middle - Self.barTop(short: short) - Self.barHeight - (short ? 6 : 16))
+-            let cardHeight = max(90, min(byBottom, byTop, geometry.size.width * 0.54 * 9 / 16) / 1.06)
+-            let cover = cardHeight * 16 / 9
++            // Boxes stand upright (boxRatio wide for 1 tall) with their reflection under them: the box and its reflection
++            // take all the height between the top bar and the title, centred in it.
++            let topEdge = Self.barTop(short: short) + Self.barHeight + (short ? 6 : 16)
++            let room = height - topEdge - gap - words - below
++            let cardHeight = max(90, min(room / (1.06 + Self.reflection), geometry.size.width * 0.34 / Self.boxRatio))
++            let cover = cardHeight * Self.boxRatio
++            let cardTop = topEdge + max(0, (room - cardHeight * (1.06 + Self.reflection)) / 2)
+             ZStack(alignment: .top) {
+                 VStack(spacing: 0) {
+                     Group {
+                         if games.count <= 3 { shelf(width: geometry.size.width, cover: cover) } else { carousel(width: geometry.size.width, cover: cover) }
+                     }.frame(height: cardHeight * 1.06)
+                     info(short: short, width: geometry.size.width)
+-                        .padding(.top, gap).padding(.horizontal, 24)
++                        .padding(.top, gap + cardHeight * Self.reflection).padding(.horizontal, 24)
+                 }
+-                .padding(.top, middle - cardHeight * 1.06 / 2)
++                .padding(.top, cardTop)
+                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                 topBar(short: short).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
+                 if !short {
+@@ -79,11 +81,15 @@ struct CoverFlowView: View, Equatable {
+         }
+     }
+ 
+-    /// The title and state under the card: two lines of title reserved, then the state line.
++    /// The title and state under the card: two lines of title reserved, then the state line, then the page dots.
+     static func infoHeight(short: Bool) -> CGFloat {
+         let size: CGFloat = short ? 18 : 28
+-        return size * 1.3 * 2 + 8 + 34
++        return size * 1.3 * 2 + 8 + 34 + 16
+     }
++    /// A game box's width for a height of 1, as a Switch case stands.
++    static let boxRatio: CGFloat = 0.62
++    /// How much of a box's height its reflection under it shows.
++    static let reflection: CGFloat = 0.22
+ 
+     /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
+     /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
+@@ -129,6 +135,7 @@ struct CoverFlowView: View, Equatable {
+                     // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
+                     coverButton(detail, cover: cover)
+                         .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
++                        .allowsHitTesting(false)   // taps are placed by where they land (below), not by the turned boxes' own areas
+                         .id(detail.id)
+                 }
+             }.scrollTargetLayout()
+@@ -163,6 +170,33 @@ struct CoverFlowView: View, Equatable {
+         }
+         .scrollIndicators(.hidden)
+         .scrollClipDisabled()
++        // The whole carousel takes taps, also beside the first and the last box where no card lies under the finger.
++        .contentShape(Rectangle())
++        // A tap is read from where it lands on the carousel: on the middle box it plays, beside it it brings the neighbour
++        // on that side to the middle. The boxes' own hit areas do not follow their 3D turn and their tuck behind the middle
++        // box, so with upright boxes a neighbour's area covered most of the middle one. The box in the middle is read from
++        // the scroll offset itself, not from the selection, which can lag at the two ends. A simultaneous gesture leaves the
++        // scroll to the scroll view.
++        .simultaneousGesture(SpatialTapGesture().onEnded { tap in
++            guard !userScrolling else { return }
++            if longPressed { longPressed = false; return }
++            let centred = min(games.count - 1, max(0, Int((scrolled / stride).rounded())))
++            let dx = tap.location.x - width / 2
++            if abs(dx) <= cover / 2 {
++                if games[centred].id != selected.id { select(games[centred].id) }
++                primary(games[centred])
++                return
++            }
++            let index = min(games.count - 1, max(0, centred + (dx < 0 ? -1 : 1)))
++            guard index != centred else { return }
++            withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = games[index].id }
++            select(games[index].id)
++        })
++        .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
++            guard settled else { return }
++            longPressed = true
++            openSettings()
++        })
+     }
+ 
+     /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
+@@ -196,9 +230,7 @@ struct CoverFlowView: View, Equatable {
+             withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = detail.id }
+             select(detail.id)
+         } label: {
+-            CoverView(game: detail.game, radius: cover * 0.03, showsState: true)
+-                .frame(width: cover, height: cover * 9 / 16)
+-                .shadow(color: .black.opacity(0.5), radius: cover * 0.05, y: cover * 0.03)
++            BoxCover(game: detail.game, chosen: chosen, width: cover)
+         }
+         .buttonStyle(.plain)
+         // A long press on the centred card opens its settings, a shortcut for the button at the top.
+@@ -238,6 +270,7 @@ struct CoverFlowView: View, Equatable {
+                 } else {
+                     StateAction(game: game) { primary(selected) }
+                 }
++                pageDots
+             }
+             .id(game.id).transition(.opacity)
+         }
+@@ -246,9 +279,24 @@ struct CoverFlowView: View, Equatable {
+         .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
+     }
+ 
++    /// One dot per game, the selected one lit; nothing for a single game.
++    private var pageDots: some View {
++        HStack(spacing: 8) {
++            if games.count > 1 {
++                ForEach(Array(games.enumerated()), id: \.element.id) { index, _ in
++                    Circle().fill(.white.opacity(index == selectedIndex ? 0.95 : 0.3))
++                        .frame(width: index == selectedIndex ? 8 : 6, height: index == selectedIndex ? 8 : 6)
++                }
++            }
++        }
++        .frame(height: 8)
++        .accessibilityHidden(true)
++    }
++
+     private var hints: some View {
+         HStack(spacing: 24) {
+-            GlyphHint(role: .activate, label: selected.game.state.actionTitle)
++            // A on the centred box opens it (the game starts from its card); a game that cannot start shows its way out.
++            GlyphHint(role: .activate, label: selected.game.state == .playable ? ShellStrings.text("Open the box") : selected.game.state.actionTitle)
+             GlyphHint(role: .settings, label: ShellStrings.text("Game settings"))
+             GlyphHint(role: .controllers, label: ShellStrings.text("Controllers"))
+         }
+@@ -257,6 +305,64 @@ struct CoverFlowView: View, Equatable {
+     }
+ }
+ 
++/// A game as an upright box: its cover, a soft sheen, the state dot, and its reflection on the floor under it. The chosen
++/// box is lit: a light edge, a blue glow around it and a ring of light at its foot.
++private struct BoxCover: View {
++    let game: GameTile
++    let chosen: Bool
++    let width: CGFloat
++    var body: some View {
++        let height = width / CoverFlowView.boxRatio
++        let radius = width * 0.035
++        let shape = RoundedRectangle(cornerRadius: radius)
++        let glow = Color(red: 0.35, green: 0.65, blue: 1.0)
++        ArtView(game: game)
++            .frame(width: width, height: height)
++            .clipShape(shape)
++            .overlay(
++                LinearGradient(colors: [.white.opacity(0.20), .clear, .clear], startPoint: .topLeading, endPoint: .center)
++                    .clipShape(shape).allowsHitTesting(false)
++            )
++            .overlay(shape.strokeBorder(.white.opacity(chosen ? 0.6 : 0.12), lineWidth: chosen ? 2 : 1))
++            .overlay(alignment: .topLeading) {
++                // A ready game shows no dot: it would sit on the box's console logo. The dot stays as a warning
++                // when the game needs its data, an app update, or cannot run.
++                if case .playable = game.state {
++                    EmptyView()
++                } else {
++                    let size = max(8, min(14, width * 0.05))
++                    StateDot(state: game.state, size: size).padding(size * 0.9)
++                }
++            }
++            .shadow(color: chosen ? glow.opacity(0.6) : .black.opacity(0.5), radius: chosen ? width * 0.10 : width * 0.05,
++                    y: chosen ? 0 : width * 0.03)
++            .background(alignment: .bottom) {
++                // The ring of light the chosen box stands on.
++                if chosen {
++                    Ellipse()
++                        .stroke(glow.opacity(0.85), lineWidth: 3)
++                        .frame(width: width * 1.35, height: width * 0.16)
++                        .blur(radius: 2)
++                        .shadow(color: glow, radius: 12)
++                        .offset(y: width * 0.08)
++                        .allowsHitTesting(false)
++                }
++            }
++            .background(alignment: .top) {
++                // The reflection: the cover turned over under the box, fading out.
++                ArtView(game: game, backdrop: false, lettering: false)
++                    .frame(width: width, height: height)
++                    .clipShape(shape)
++                    .mask(LinearGradient(colors: [.clear, .clear, .white.opacity(0.35)], startPoint: .top, endPoint: .bottom))
++                    .scaleEffect(x: 1, y: -1, anchor: .bottom)
++                    .offset(y: 4)
++                    .opacity(0.8)
++                    .allowsHitTesting(false)
++            }
++            .accessibilityHidden(true)
++    }
++}
++
+ /// The way out for a game that cannot start, as one small tappable line in the state's colour: "How to fix ›".
+ /// VoiceOver reads the state with it.
+ struct StateAction: View {
+@@ -352,25 +458,44 @@ private struct FlowTilt: ViewModifier {
+     }
+ }
+ 
+-/// The blurred cover behind Cover Flow. It crossfades as the middle cover changes.
++/// Behind Cover Flow: the chosen game's own backdrop picture, sharp, when it has one; otherwise its blurred cover. It
++/// crossfades as the middle cover changes.
+ struct CoverFlowBackdrop: View {
+     let game: GameTile
+     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+     var body: some View {
+         ZStack {
+             ShellPalette.background
+-            ArtView(game: game, backdrop: true)
+-                .scaleEffect(1.3)
+-                .blur(radius: 60, opaque: true)
+-                .saturation(1.25)
+-                .opacity(0.75)
++            if let picture = game.backdrop {
++                GeometryReader { geometry in
++                    Image(decorative: picture.image, scale: 1).resizable().interpolation(.high).scaledToFill()
++                        .frame(width: geometry.size.width, height: geometry.size.height)
++                        .clipped()
++                }
+                 .id(game.id)
+                 .transition(.opacity)
+-            // Darker toward the edges and the bottom, so the type and the covers keep their contrast.
+-            RadialGradient(colors: [.clear, ShellPalette.background.opacity(0.75)], center: .init(x: 0.5, y: 0.4),
+-                           startRadius: 80, endRadius: 900)
+-            LinearGradient(colors: [.black.opacity(0.25), .clear, ShellPalette.background.opacity(0.85)],
+-                           startPoint: .top, endPoint: .bottom)
++                if !reduceMotion {
++                    AmbienceLayer(kind: game.ambience).id(game.id).transition(.opacity)
++                }
++                // Only as dark as the type needs: the top bar, the edges a little, the title at the bottom.
++                RadialGradient(colors: [.clear, .black.opacity(0.35)], center: .init(x: 0.5, y: 0.45), startRadius: 200, endRadius: 1000)
++                LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.18),
++                                       .init(color: .clear, location: 0.55), .init(color: .black.opacity(0.75), location: 1)],
++                               startPoint: .top, endPoint: .bottom)
++            } else {
++                ArtView(game: game, backdrop: true)
++                    .scaleEffect(1.3)
++                    .blur(radius: 60, opaque: true)
++                    .saturation(1.25)
++                    .opacity(0.75)
++                    .id(game.id)
++                    .transition(.opacity)
++                // Darker toward the edges and the bottom, so the type and the covers keep their contrast.
++                RadialGradient(colors: [.clear, ShellPalette.background.opacity(0.75)], center: .init(x: 0.5, y: 0.4),
++                               startRadius: 80, endRadius: 900)
++                LinearGradient(colors: [.black.opacity(0.25), .clear, ShellPalette.background.opacity(0.85)],
++                               startPoint: .top, endPoint: .bottom)
++            }
+         }
+         .animation(reduceMotion ? .linear(duration: 0.2) : .easeInOut(duration: 0.45), value: game.id)
+         .ignoresSafeArea()
+diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
+new file mode 100644
+index 0000000..1f64801
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
+@@ -0,0 +1,444 @@
++import SwiftUI
++
++/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
++/// cover holds the instruction booklet and the tray holds the game card, low in the middle as in a Switch case. Drawn from the
++/// game's own box art, with no other picture.
++/// Playing is putting the card in the console: a tap on the card (or A, the card being the focus) lifts it out of the tray, flies it
++/// to the slot at the top right of the screen and pushes it in, with a click and a knock of the haptics; the slot flares, the
++/// screen fades to black, and the game starts there, its first frames being black too.
++/// A tap on the box or the round button closes and opens it, Game info opens the info panel, B, a tap beside it or Close leaves.
++struct GameBoxView: View {
++    let game: GameTile
++    /// Play: the game's one action. For a game that can start, the insertion plays first.
++    let insert: () -> Void
++    let showInfo: () -> Void
++    let close: () -> Void
++    /// The box has come forward.
++    @State private var shown = false
++    @State private var opened = false
++    @State private var phase = InsertPhase.idle
++    /// Counts the clicks, for the haptic feedback.
++    @State private var clicks = 0
++    /// The screen going to black once the card is in, before the game takes it over.
++    @State private var blackout = false
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++
++    enum InsertPhase { case idle, lifted, flying, inside }
++    private var playable: Bool { game.state == .playable }
++
++    var body: some View {
++        GeometryReader { geometry in
++            // As tall as leaves room for the buttons, and never wider open than the screen.
++            let height = min(geometry.size.height * 0.72, geometry.size.width * 0.86 / (2 * CoverFlowView.boxRatio))
++            let width = height * CoverFlowView.boxRatio
++            let size = geometry.size
++            // Where the card lies in the open tray (see CaseTray), on the screen: the tray is the right half of the open case.
++            let card = CGSize(width: width * CaseTray.cardShare, height: width * CaseTray.cardShare * CaseTray.cardRatio)
++            let caseCentre = CGPoint(x: size.width / 2, y: size.height / 2 - height * 0.03)
++            let inTray = CGPoint(x: caseCentre.x + width / 2,
++                                 y: caseCentre.y + height / 2 - height * CaseTray.bottomShare - card.height * 0.55)
++            // The console's slot, at the top right: the card arrives under it at `scale` and goes in upward.
++            let scale: CGFloat = 0.55
++            let slot = CGPoint(x: size.width - 40 - card.width * scale * 0.6, y: 92)
++            ZStack {
++                RadialGradient(colors: [Color(red: 0.16, green: 0.17, blue: 0.2).opacity(0.94), .black.opacity(0.94)],
++                               center: .center, startRadius: 40, endRadius: max(size.width, size.height) * 0.7)
++                    .ignoresSafeArea()
++                    .contentShape(Rectangle())
++                    .onTapGesture { if phase == .idle { close() } }
++                    .accessibilityHidden(true)
++                OpeningCase(game: game, width: width, progress: opened ? 1 : 0, cardInTray: phase == .idle)
++                    .rotation3DEffect(.degrees(shown ? 0 : 38), axis: (x: 0, y: 1, z: 0), perspective: 0.45)
++                    .rotation3DEffect(.degrees(shown ? 4 : 0), axis: (x: 1, y: 0, z: 0), perspective: 0.45)
++                    .scaleEffect(shown ? 1 : 0.5)
++                    .opacity(shown ? 1 : 0)
++                    .offset(y: -height * 0.03)
++                    .onTapGesture { if phase == .idle { toggle() } }
++                    .accessibilityElement()
++                    .accessibilityLabel(game.title)
++                    .accessibilityValue(opened ? ShellStrings.text("Open") : ShellStrings.text("Closed"))
++                    .accessibilityAddTraits(.isButton)
++                    .accessibilityAction(named: opened ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"), toggle)
++                    .accessibilityIdentifier("box.case")
++                // The card, as a button over the one in the tray, once the box is open.
++                if opened && phase == .idle {
++                    Button(action: play) { Color.clear.contentShape(Rectangle()) }
++                        .buttonStyle(.plain)
++                        .frame(width: card.width * 1.1, height: card.height * 1.1)
++                        .position(inTray)
++                        .accessibilityLabel(ShellStrings.text("Insert the game card") + ", " + game.title)
++                        .accessibilityIdentifier("box.cart")
++                        .shellTarget("box.cart", radius: card.width * 0.06, action: play)
++                        .transition(.opacity)
++                }
++                ConsoleSlot(width: card.width * scale * 1.18, lit: phase == .flying || phase == .inside, flare: phase == .inside)
++                    .position(x: slot.x, y: slot.y)
++                    .opacity(opened && playable ? 1 : 0)
++                    .accessibilityHidden(true)
++                if phase != .idle {
++                    // The flying card, masked above the slot's line: going up through it, it goes into the console.
++                    ZStack {
++                        GameCard(game: game, width: card.width, height: card.height)
++                            .scaleEffect(phase == .idle ? 1 : phase == .lifted ? 1.12 : scale)
++                            .rotationEffect(.degrees(phase == .lifted ? -4 : 0))
++                            .shadow(color: .black.opacity(0.5), radius: phase == .lifted ? 24 : 8, y: phase == .lifted ? 14 : 4)
++                            .position(phase == .lifted ? CGPoint(x: inTray.x, y: inTray.y - card.height * 0.18)
++                                      : phase == .flying ? CGPoint(x: slot.x, y: slot.y + card.height * scale / 2 + 6)
++                                      : CGPoint(x: slot.x, y: slot.y - card.height * scale / 2 - 4))
++                    }
++                    .frame(width: size.width, height: size.height)
++                    .mask(alignment: .top) {
++                        Rectangle().padding(.top, phase == .lifted ? 0 : slot.y)
++                    }
++                    .allowsHitTesting(false)
++                    .accessibilityHidden(true)
++                }
++                VStack(spacing: 0) {
++                    HStack(alignment: .top) {
++                        VStack(alignment: .leading, spacing: 4) {
++                            Text(game.title).shellType(ShellType.cardTitle).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
++                            Text(statsLine).shellType(ShellType.note).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
++                        }
++                        Spacer(minLength: 12)
++                        Button(action: close) { Label(ShellStrings.text("Close"), systemImage: "xmark") }
++                            .buttonStyle(ChipButtonStyle())
++                            .accessibilityIdentifier("box.close")
++                            .shellTarget("box.close", radius: 22, action: close)
++                            // The slot sits under this corner: the close button steps left of it.
++                            .padding(.trailing, playable ? card.width * scale * 1.3 + 16 : 0)
++                    }
++                    Spacer(minLength: 0)
++                    HStack(spacing: 20) {
++                        if opened && playable {
++                            GlyphHint(role: .activate, label: ShellStrings.text("Insert the game card"))
++                        }
++                        Button(action: toggle) {
++                            Label(opened ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"),
++                                  systemImage: opened ? "arrow.uturn.backward" : "book.pages")
++                        }
++                        .buttonStyle(ChipButtonStyle())
++                        .accessibilityIdentifier("box.toggle")
++                        .shellTarget("box.toggle", radius: 22, action: toggle)
++                        Button(action: showInfo) { Label(ShellStrings.text("Game info"), systemImage: "info.circle") }
++                            .buttonStyle(ChipButtonStyle())
++                            .accessibilityIdentifier("box.info")
++                            .shellTarget("box.info", radius: 22, action: showInfo)
++                        GlyphHint(role: .back, label: ShellStrings.text("Back"))
++                    }
++                }
++                .padding(.horizontal, 24).padding(.vertical, 12)
++                .allowsHitTesting(phase == .idle)
++                Color.black.ignoresSafeArea()
++                    .opacity(blackout ? 1 : 0)
++                    .allowsHitTesting(blackout)
++                    .accessibilityHidden(true)
++            }
++            .frame(width: size.width, height: size.height)
++        }
++        .sensoryFeedback(.impact(weight: .heavy, intensity: 1), trigger: clicks)
++        .onAppear(perform: present)
++    }
++
++    private var statsLine: String {
++        ShellFormat.metaLine(ShellStrings.text("Played") + " " + ShellFormat.playTime(game.stats.seconds),
++                             ShellFormat.lastPlayed(game.stats.lastPlayed),
++                             ShellStrings.text("Launches") + " \(game.stats.launches)")
++    }
++
++    private func present() {
++        if playable { InsertSound.prepare() }
++        if reduceMotion { shown = true; opened = true; return }
++        withAnimation(.spring(duration: 0.6, bounce: 0.18)) { shown = true }
++        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { opened = true }
++    }
++    /// The game, from the black screen. A game that does not start leaves the box here: after a moment the screen comes back and
++    /// the card is in the tray again, for another try or to leave.
++    private func start() {
++        insert()
++        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
++            withAnimation(.easeOut(duration: 0.4)) { blackout = false; phase = .idle }
++        }
++    }
++    private func toggle() {
++        guard phase == .idle else { return }
++        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.9)) { opened.toggle() }
++    }
++    /// The card into the console, then the game. A game that cannot start takes its way out at once.
++    private func play() {
++        guard phase == .idle else { return }
++        guard playable else { insert(); return }
++        if reduceMotion {
++            InsertSound.play(); clicks += 1
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { insert() }
++            return
++        }
++        withAnimation(.easeOut(duration: 0.18)) { phase = .lifted } completion: {
++            withAnimation(.easeInOut(duration: 0.5)) { phase = .flying } completion: {
++                withAnimation(.easeIn(duration: 0.14)) { phase = .inside } completion: {
++                    InsertSound.play()
++                    clicks += 1
++                    // The slot flares, then the screen fades to black and the game starts in the dark.
++                    withAnimation(.easeIn(duration: 0.6).delay(0.3)) { blackout = true } completion: { start() }
++                }
++            }
++        }
++    }
++}
++
++/// The console's card slot at the top right of the box screen: a dark opening in a rim, lit while a card goes in.
++private struct ConsoleSlot: View {
++    let width: CGFloat
++    let lit: Bool
++    /// The card is in: a brighter, wider light around the slot.
++    var flare = false
++    var body: some View {
++        let glow = Color(red: 0.35, green: 0.65, blue: 1.0)
++        ZStack {
++            Capsule().fill(LinearGradient(colors: [Color(white: 0.28), Color(white: 0.12)], startPoint: .top, endPoint: .bottom))
++                .frame(width: width + 18, height: 22)
++                .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
++            Capsule().fill(flare ? glow.mix(with: .white, by: 0.55) : .black).frame(width: width, height: 6)
++                .shadow(color: lit ? glow : .clear, radius: lit ? (flare ? 14 : 8) : 0)
++                .shadow(color: flare ? glow.opacity(0.9) : .clear, radius: flare ? 28 : 0)
++        }
++        .shadow(color: .black.opacity(0.5), radius: 8, y: 3)
++        .animation(.easeOut(duration: 0.2), value: lit)
++        .animation(.easeOut(duration: 0.25), value: flare)
++    }
++}
++
++/// Switch-case red plastic, lit from the top left.
++private let caseRed = Color(red: 0.84, green: 0.07, blue: 0.11)
++private let caseRedDark = Color(red: 0.58, green: 0.03, blue: 0.07)
++
++/// The case at a point of its opening, 0 closed to 1 open flat. The tray is the right half, and the cover swings around the tray's
++/// left edge to lie on the left: its front while it turns less than a right angle, its inside after. The whole case slides so it
++/// stays in the middle, closed or open.
++private struct OpeningCase: View, Animatable {
++    let game: GameTile
++    let width: CGFloat
++    var progress: Double
++    /// False once the card has been taken out to be inserted.
++    var cardInTray = true
++    nonisolated var animatableData: Double {
++        get { progress }
++        set { progress = newValue }
++    }
++
++    var body: some View {
++        let height = width / CoverFlowView.boxRatio
++        let angle = progress * 180
++        let edgeOn = sin(angle * .pi / 180)          // 0 flat, 1 edge-on to the player
++        let inside = angle > 90
++        ZStack(alignment: .topLeading) {
++            // The floor shadow, wider as the case opens.
++            Ellipse().fill(.black.opacity(0.55))
++                .frame(width: width * (1.1 + progress), height: height * 0.07)
++                .blur(radius: width * 0.06)
++                .offset(x: width * (0.95 - progress) - width * 0.05, y: height * 1.02)
++            CaseTray(game: game, width: width, height: height, cardInTray: cardInTray)
++                .offset(x: width)
++            Group {
++                if inside {
++                    // Seen from behind once past a right angle: drawn mirrored, so it reads the right way round.
++                    CaseInside(game: game, width: width, height: height).scaleEffect(x: -1, y: 1)
++                } else {
++                    CaseFront(game: game, width: width, height: height)
++                }
++            }
++            .brightness(-0.38 * edgeOn)
++            .rotation3DEffect(.degrees(-angle), axis: (x: 0, y: 1, z: 0), anchor: .leading, perspective: 0.32)
++            .offset(x: width)
++            .zIndex(1)
++        }
++        .frame(width: width * 2, height: height, alignment: .topLeading)
++        .offset(x: -width / 2 * (1 - progress))
++    }
++}
++
++/// The closed box's front: the game's box art, a plastic rim and a soft sheen.
++private struct CaseFront: View {
++    let game: GameTile
++    let width: CGFloat
++    let height: CGFloat
++    var body: some View {
++        let shape = RoundedRectangle(cornerRadius: width * 0.035)
++        ArtView(game: game)
++            .frame(width: width, height: height)
++            .clipShape(shape)
++            .overlay(
++                LinearGradient(colors: [.white.opacity(0.22), .clear, .clear, .black.opacity(0.18)],
++                               startPoint: .topLeading, endPoint: .bottomTrailing)
++                    .clipShape(shape)
++            )
++            .overlay(shape.strokeBorder(.white.opacity(0.18), lineWidth: 1))
++            .overlay(alignment: .leading) {
++                // The spine's edge on the hinge side.
++                LinearGradient(colors: [.black.opacity(0.45), .clear], startPoint: .leading, endPoint: .trailing)
++                    .frame(width: width * 0.05)
++                    .clipShape(shape)
++            }
++            .shadow(color: .black.opacity(0.5), radius: width * 0.05, y: width * 0.02)
++    }
++}
++
++/// The plastic of an open half: a red panel with a raised rim and a recessed field.
++private struct CasePlastic<Content: View>: View {
++    let width: CGFloat
++    let height: CGFloat
++    @ViewBuilder let content: () -> Content
++    var body: some View {
++        let outer = RoundedRectangle(cornerRadius: width * 0.035)
++        let inner = RoundedRectangle(cornerRadius: width * 0.025)
++        ZStack {
++            outer.fill(LinearGradient(colors: [caseRed, caseRedDark], startPoint: .topLeading, endPoint: .bottomTrailing))
++            inner.fill(LinearGradient(colors: [caseRedDark.opacity(0.9), caseRed.opacity(0.95)], startPoint: .top, endPoint: .bottom))
++                .padding(width * 0.045)
++                .overlay(inner.strokeBorder(.black.opacity(0.28), lineWidth: 1.5).padding(width * 0.045))
++            content()
++        }
++        .frame(width: width, height: height)
++        .overlay(outer.strokeBorder(.white.opacity(0.16), lineWidth: 1))
++        .shadow(color: .black.opacity(0.5), radius: width * 0.05, y: width * 0.02)
++    }
++}
++
++/// The inside of the cover: the instruction booklet, held by two clips.
++private struct CaseInside: View {
++    let game: GameTile
++    let width: CGFloat
++    let height: CGFloat
++    var body: some View {
++        CasePlastic(width: width, height: height) {
++            let bookletWidth = width * 0.8
++            let bookletHeight = height * 0.86
++            let band = bookletHeight * 0.075
++            VStack(spacing: 0) {
++                Text(game.title.uppercased()).font(ShellFonts.fixed(max(6, band * 0.42), weight: .bold)).tracking(0.6)
++                    .lineLimit(1).minimumScaleFactor(0.5)
++                    .foregroundStyle(.white)
++                    .padding(.horizontal, band * 0.4)
++                    .frame(maxWidth: .infinity, minHeight: band, maxHeight: band, alignment: .leading)
++                    .background(caseRed)
++                ArtView(game: game, lettering: false)
++                    .frame(width: bookletWidth, height: bookletHeight - band * 2)
++                    .clipped()
++                    .overlay(LinearGradient(colors: [.clear, .black.opacity(0.25)], startPoint: .center, endPoint: .bottom))
++                HStack(spacing: 0) {
++                    Text(ShellStrings.text("Instruction booklet").uppercased())
++                        .font(ShellFonts.fixed(max(6, band * 0.38), weight: .heavy)).tracking(0.8)
++                        .lineLimit(1).minimumScaleFactor(0.5)
++                    Spacer(minLength: 4)
++                    Image(systemName: "book.closed.fill").font(.system(size: max(6, band * 0.42)))
++                }
++                .foregroundStyle(Color(white: 0.2))
++                .padding(.horizontal, band * 0.4)
++                .frame(maxWidth: .infinity, minHeight: band, maxHeight: band)
++                .background(Color(white: 0.94))
++            }
++            .frame(width: bookletWidth, height: bookletHeight)
++            .clipShape(RoundedRectangle(cornerRadius: width * 0.012))
++            .shadow(color: .black.opacity(0.45), radius: width * 0.03, x: width * 0.01, y: width * 0.015)
++            .overlay(alignment: .trailing) {
++                // The two clips on the hinge side.
++                VStack(spacing: bookletHeight * 0.45) {
++                    clip
++                    clip
++                }
++                .offset(x: width * 0.035)
++            }
++        }
++    }
++    private var clip: some View {
++        RoundedRectangle(cornerRadius: width * 0.012)
++            .fill(LinearGradient(colors: [caseRed, caseRedDark], startPoint: .leading, endPoint: .trailing))
++            .frame(width: width * 0.07, height: height * 0.07)
++            .shadow(color: .black.opacity(0.4), radius: 2, x: -1)
++    }
++}
++
++/// The tray: the game card in its slot low in the middle, as in a Switch case, with the small arrow moulded beside it.
++struct CaseTray: View {
++    let game: GameTile
++    let width: CGFloat
++    let height: CGFloat
++    var cardInTray = true
++    /// The card's width for the tray's, its height for its width, and the tray's margin under the slot for its height. The box
++    /// view places the card it flies to the console from these.
++    static let cardShare: CGFloat = 0.3
++    static let cardRatio: CGFloat = 1.42
++    static let bottomShare: CGFloat = 0.09
++    var body: some View {
++        CasePlastic(width: width, height: height) {
++            let cardWidth = width * Self.cardShare
++            let cardHeight = cardWidth * Self.cardRatio
++            VStack(spacing: 0) {
++                Spacer(minLength: 0)
++                ZStack {
++                    // The slot: a dark recess a little larger than the card.
++                    GameCardShape(notch: cardWidth * 0.14)
++                        .fill(caseRedDark.opacity(0.95))
++                        .frame(width: cardWidth * 1.14, height: cardHeight * 1.1)
++                        .overlay(GameCardShape(notch: cardWidth * 0.14).stroke(.black.opacity(0.35), lineWidth: 2))
++                    GameCard(game: game, width: cardWidth, height: cardHeight).opacity(cardInTray ? 1 : 0)
++                }
++                .overlay(alignment: .trailing) {
++                    // The moulded arrow beside the slot.
++                    Image(systemName: "arrowtriangle.left").font(.system(size: max(6, width * 0.05), weight: .light))
++                        .foregroundStyle(caseRedDark.opacity(0.9))
++                        .offset(x: width * 0.12)
++                }
++                .padding(.bottom, height * Self.bottomShare)
++            }
++            .frame(width: width, height: height)
++        }
++    }
++}
++
++/// A game card: a dark body with its corner cut, the label with the box art and a white strip.
++private struct GameCard: View {
++    let game: GameTile
++    let width: CGFloat
++    let height: CGFloat
++    var body: some View {
++        let shape = GameCardShape(notch: width * 0.14)
++        ZStack(alignment: .top) {
++            shape.fill(LinearGradient(colors: [Color(white: 0.24), Color(white: 0.12)], startPoint: .top, endPoint: .bottom))
++            VStack(spacing: 0) {
++                ArtView(game: game, lettering: false)
++                    .frame(width: width * 0.82, height: height * 0.68)
++                    .clipped()
++                Rectangle().fill(Color(white: 0.95)).frame(width: width * 0.82, height: height * 0.1)
++                    .overlay(
++                        Text(game.title).font(ShellFonts.fixed(max(5, height * 0.05), weight: .bold))
++                            .foregroundStyle(Color(white: 0.2)).lineLimit(1).minimumScaleFactor(0.4).padding(.horizontal, 3)
++                    )
++            }
++            .clipShape(RoundedRectangle(cornerRadius: width * 0.04))
++            .padding(.top, height * 0.12)
++        }
++        .frame(width: width, height: height)
++        .overlay(shape.stroke(.white.opacity(0.18), lineWidth: 1))
++        .shadow(color: .black.opacity(0.5), radius: width * 0.06, y: width * 0.03)
++    }
++}
++
++/// A game card's outline: a rounded rectangle with its top right corner cut off.
++private struct GameCardShape: Shape {
++    let notch: CGFloat
++    func path(in rect: CGRect) -> Path {
++        let r = min(rect.width, rect.height) * 0.06
++        var p = Path()
++        p.move(to: CGPoint(x: rect.minX + r, y: rect.minY))
++        p.addLine(to: CGPoint(x: rect.maxX - notch, y: rect.minY))
++        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + notch))
++        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
++        p.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
++        p.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
++        p.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r), control: CGPoint(x: rect.minX, y: rect.maxY))
++        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
++        p.addQuadCurve(to: CGPoint(x: rect.minX + r, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
++        p.closeSubpath()
++        return p
++    }
++}
+diff --git a/frontend-ios/Sources/ShellUI/GameInfoPanel.swift b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
+new file mode 100644
+index 0000000..cd96a16
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
+@@ -0,0 +1,130 @@
++import SwiftUI
++
++/// A game's info panel in Cover Flow: it slides in from the right when the centred box is chosen (A or a tap), and holds the
++/// game's play statistics, its one action (Play, or the way out for a game that cannot start), the open-box view and the game
++/// settings, then what the game is about: its synopsis and screenshots, each opening full screen. Everything is a focus target for a controller and a button for touch. B, a tap beside it or Close closes it.
++struct GameInfoPanel: View {
++    let detail: GameDetail
++    let primary: () -> Void
++    let openBox: () -> Void
++    let openSettings: () -> Void
++    let openScreenshot: (Int) -> Void
++    let close: () -> Void
++    @Environment(\.shellFocus) private var focus
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++
++    var body: some View {
++        let game = detail.game
++        ScrollViewReader { proxy in
++        ScrollView {
++            VStack(alignment: .leading, spacing: 20) {
++                HStack {
++                    SectionHeading(title: ShellStrings.text("Game info"))
++                    Spacer(minLength: 8)
++                    Button(action: close) { Image(systemName: "xmark").frame(minWidth: 18) }
++                        .buttonStyle(ChipButtonStyle())
++                        .accessibilityLabel(ShellStrings.text("Close"))
++                        .accessibilityIdentifier("info.close")
++                        .shellTarget("info.close", radius: 22, action: close)
++                }
++                .id("info.top")
++                HStack(alignment: .center, spacing: 16) {
++                    ArtView(game: game, lettering: false)
++                        .frame(width: 70, height: 70 / CoverFlowView.boxRatio)
++                        .clipShape(RoundedRectangle(cornerRadius: 5))
++                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.white.opacity(0.16)))
++                        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
++                        .accessibilityHidden(true)
++                    VStack(alignment: .leading, spacing: 7) {
++                        StatusLabel(state: game.state, prominent: true)
++                        Text(game.title).shellType(ShellType.pageTitle).lineLimit(3).minimumScaleFactor(0.8)
++                            .fixedSize(horizontal: false, vertical: true)
++                            .accessibilityAddTraits(.isHeader).accessibilityIdentifier("info.title")
++                        if !game.subtitle.isEmpty {
++                            Text(game.subtitle).shellType(ShellType.note).foregroundStyle(.white.opacity(0.5))
++                        }
++                    }
++                }
++                EqualRow(spacing: 8) {
++                    StatTile(label: ShellStrings.text("Played"), value: ShellFormat.playTime(game.stats.seconds))
++                    StatTile(label: ShellStrings.text("Last played"), value: ShellFormat.lastPlayed(game.stats.lastPlayed))
++                    StatTile(label: ShellStrings.text("Launches"), value: "\(game.stats.launches)")
++                }
++                .accessibilityElement(children: .combine)
++                .accessibilityIdentifier("info.stats")
++                Button(action: primary) {
++                    Label(game.state.actionTitle, systemImage: game.state.actionSymbol)
++                }
++                .buttonStyle(PrimaryPillStyle(expands: true))
++                .accessibilityIdentifier("info.play")
++                .accessibilityLabel(game.state.actionTitle + ", " + game.title)
++                .shellTarget("info.play", radius: 25, action: primary)
++                if !game.state.explanation.isEmpty {
++                    Text(game.state.explanation).shellText(14).foregroundStyle(.white.opacity(0.72))
++                        .fixedSize(horizontal: false, vertical: true)
++                }
++                EqualRow(spacing: 10) {
++                    Button(action: openBox) { Label(ShellStrings.text("Open the box"), systemImage: "shippingbox") }
++                        .buttonStyle(ShellButtonStyle(fills: true))
++                        .accessibilityIdentifier("info.box")
++                        .shellTarget("info.box", radius: 9, action: openBox)
++                    Button(action: openSettings) { Label(ShellStrings.text("Game settings"), systemImage: "slider.horizontal.3") }
++                        .buttonStyle(ShellButtonStyle(fills: true))
++                        .accessibilityIdentifier("info.settings")
++                        .shellTarget("info.settings", radius: 9, action: openSettings)
++                }
++                Text(ShellStrings.text("Play time and launches are counted by this app, on this device."))
++                    .shellType(ShellType.note).foregroundStyle(.white.opacity(0.4))
++                    .fixedSize(horizontal: false, vertical: true)
++                if !game.synopsis.isEmpty || !game.screens.isEmpty {
++                    VStack(alignment: .leading, spacing: 12) {
++                        SectionHeading(title: ShellStrings.text("About the game"))
++                        if !game.synopsis.isEmpty {
++                            Text(game.synopsis).shellText(14.5).foregroundStyle(.white.opacity(0.8))
++                                .lineSpacing(2)
++                                .fixedSize(horizontal: false, vertical: true)
++                                .accessibilityIdentifier("info.synopsis")
++                        }
++                        if !game.screens.isEmpty {
++                            ScreenshotStrip(screens: game.screens, open: openScreenshot)
++                                .id("info.shots")
++                                .padding(.horizontal, -22)
++                                .contentMargins(.horizontal, 22, for: .scrollContent)
++                        }
++                    }
++                    .padding(.top, 6)
++                }
++            }
++            .padding(22)
++        }
++        .scrollIndicators(.hidden)
++        .onChange(of: focus.id) { _, id in
++            // Keeps the focused control in view, the screenshots included, on a short screen.
++            guard let id, id.hasPrefix("info.") else { return }
++            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
++                proxy.scrollTo(id == "info.close" ? "info.top" : (id.hasPrefix("info.shot.") ? "info.shots" : id),
++                               anchor: id == "info.close" ? .top : .center)
++            }
++        }
++        }
++        .foregroundStyle(.white)
++    }
++}
++
++/// One figure of the panel: a small label in capitals over the value.
++private struct StatTile: View {
++    let label: String
++    let value: String
++    var body: some View {
++        VStack(alignment: .leading, spacing: 6) {
++            Text(label.uppercased()).shellType(ShellType.eyebrow).foregroundStyle(ShellPalette.cream.opacity(0.6))
++                .lineLimit(1).minimumScaleFactor(0.7)
++            Text(value).shellText(17, .bold, relativeTo: .headline).monospacedDigit()
++                .lineLimit(1).minimumScaleFactor(0.6)
++        }
++        .frame(maxWidth: .infinity, alignment: .leading)
++        .padding(.horizontal, 12).padding(.vertical, 11)
++        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11))
++        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.09)))
++    }
++}
+diff --git a/frontend-ios/Sources/ShellUI/GameScreens.swift b/frontend-ios/Sources/ShellUI/GameScreens.swift
+new file mode 100644
+index 0000000..2eb5232
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/GameScreens.swift
+@@ -0,0 +1,157 @@
++import SwiftUI
++
++/// Decodes a game's screenshots off the main thread, at the size they are drawn, and keeps the recent ones. The tile only lists
++/// the files (see `GameTile.screens`): nothing is decoded until the info panel shows it.
++@MainActor
++final class ScreenshotCache {
++    static let shared = ScreenshotCache()
++    private final class Box { let art: Artwork; init(_ art: Artwork) { self.art = art } }
++    private let cache: NSCache<NSString, Box> = {
++        let cache = NSCache<NSString, Box>()
++        cache.countLimit = 24
++        return cache
++    }()
++
++    func cached(_ url: URL, maxPixels: Int) -> Artwork? { cache.object(forKey: Self.key(url, maxPixels))?.art }
++
++    func load(_ url: URL, maxPixels: Int) async -> Artwork? {
++        if let art = cached(url, maxPixels: maxPixels) { return art }
++        let art = await Task.detached(priority: .userInitiated) { Artwork(id: url.path, url: url, maxPixels: maxPixels) }.value
++        if let art { cache.setObject(Box(art), forKey: Self.key(url, maxPixels)) }
++        return art
++    }
++
++    private static func key(_ url: URL, _ maxPixels: Int) -> NSString { "\(maxPixels)|\(url.path)" as NSString }
++}
++
++/// One screenshot, filling its frame (`fill`) or whole inside it, a dark plate while it decodes.
++struct ScreenshotImage: View {
++    let url: URL
++    let maxPixels: Int
++    var fill = true
++    @State private var art: Artwork?
++
++    var body: some View {
++        ZStack {
++            if let art {
++                Image(decorative: art.image, scale: 1).resizable().interpolation(.high)
++                    .aspectRatio(contentMode: fill ? .fill : .fit)
++                    .transition(.opacity)
++            } else {
++                Color.white.opacity(0.05)
++            }
++        }
++        .task(id: url) {
++            if let ready = ScreenshotCache.shared.cached(url, maxPixels: maxPixels) { art = ready; return }
++            let loaded = await ScreenshotCache.shared.load(url, maxPixels: maxPixels)
++            withAnimation(.easeOut(duration: 0.2)) { art = loaded }
++        }
++    }
++}
++
++/// The row of screenshots in the info panel: a tap, or A on the focused one, opens it full screen. It scrolls sideways to keep
++/// the focused one in view.
++struct ScreenshotStrip: View {
++    let screens: [URL]
++    let open: (Int) -> Void
++    @Environment(\.shellFocus) private var focus
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++
++    var body: some View {
++        ScrollViewReader { proxy in
++            ScrollView(.horizontal) {
++                HStack(spacing: 10) {
++                    ForEach(Array(screens.enumerated()), id: \.offset) { index, url in
++                        let id = "info.shot.\(index)"
++                        Button { open(index) } label: {
++                            ScreenshotImage(url: url, maxPixels: 480)
++                                .frame(width: 176, height: 99)
++                                .clipShape(RoundedRectangle(cornerRadius: 8))
++                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.12)))
++                                .contentShape(RoundedRectangle(cornerRadius: 8))
++                        }
++                        .buttonStyle(.plain)
++                        .accessibilityLabel(ShellStrings.text("Screenshot") + " \(index + 1)/\(screens.count)")
++                        .accessibilityIdentifier(id)
++                        .shellTarget(id, radius: 8) { open(index) }
++                        .id(id)
++                    }
++                }
++                .padding(.vertical, 4).padding(.horizontal, 2)
++            }
++            .scrollIndicators(.hidden)
++            .onChange(of: focus.id) { _, id in
++                guard let id, id.hasPrefix("info.shot.") else { return }
++                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
++            }
++        }
++    }
++}
++
++/// A screenshot full screen, over everything: swipe, the arrows or left and right on a controller go through them; B, Close or a
++/// tap on the black closes it.
++struct ScreenshotViewer: View {
++    let title: String
++    let screens: [URL]
++    @Binding var index: Int
++    let close: () -> Void
++
++    var body: some View {
++        ZStack {
++            Color.black.ignoresSafeArea()
++                .onTapGesture(perform: close)
++                .accessibilityHidden(true)
++            TabView(selection: $index) {
++                ForEach(Array(screens.enumerated()), id: \.offset) { i, url in
++                    ScreenshotImage(url: url, maxPixels: 1920, fill: false)
++                        .frame(maxWidth: .infinity, maxHeight: .infinity)
++                        .accessibilityElement()
++                        .accessibilityLabel(ShellStrings.text("Screenshot") + " \(i + 1)/\(screens.count)")
++                        .tag(i)
++                }
++            }
++            .tabViewStyle(.page(indexDisplayMode: .never))
++            .ignoresSafeArea()
++            VStack {
++                HStack(alignment: .center) {
++                    VStack(alignment: .leading, spacing: 3) {
++                        Text(title).shellType(ShellType.cardTitle).lineLimit(1)
++                        Text(verbatim: "\(index + 1) / \(screens.count)").shellType(ShellType.note).monospacedDigit()
++                            .foregroundStyle(.white.opacity(0.6))
++                    }
++                    Spacer(minLength: 12)
++                    Button(action: close) { Label(ShellStrings.text("Close"), systemImage: "xmark") }
++                        .buttonStyle(ChipButtonStyle())
++                        .accessibilityIdentifier("shot.close")
++                        .shellTarget("shot.close", radius: 22, action: close)
++                }
++                Spacer(minLength: 0)
++                HStack(spacing: 14) {
++                    Button(action: previous) { Image(systemName: "chevron.left").frame(minWidth: 18) }
++                        .buttonStyle(ChipButtonStyle())
++                        .disabled(index == 0)
++                        .accessibilityLabel(ShellStrings.text("Previous"))
++                        .accessibilityIdentifier("shot.prev")
++                    HStack(spacing: 7) {
++                        ForEach(screens.indices, id: \.self) { i in
++                            Circle().fill(.white.opacity(i == index ? 0.95 : 0.3)).frame(width: 7, height: 7)
++                        }
++                    }
++                    .accessibilityHidden(true)
++                    Button(action: next) { Image(systemName: "chevron.right").frame(minWidth: 18) }
++                        .buttonStyle(ChipButtonStyle())
++                        .disabled(index >= screens.count - 1)
++                        .accessibilityLabel(ShellStrings.text("Next"))
++                        .accessibilityIdentifier("shot.next")
++                    GlyphHint(role: .back, label: ShellStrings.text("Back"))
++                }
++            }
++            .padding(.horizontal, 24).padding(.vertical, 12)
++            .foregroundStyle(.white)
++        }
++        .animation(.easeInOut(duration: 0.25), value: index)
++    }
++
++    private func previous() { if index > 0 { index -= 1 } }
++    private func next() { if index < screens.count - 1 { index += 1 } }
++}
+diff --git a/frontend-ios/Sources/ShellUI/InsertSound.swift b/frontend-ios/Sources/ShellUI/InsertSound.swift
+new file mode 100644
+index 0000000..01d2303
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/InsertSound.swift
+@@ -0,0 +1,61 @@
++import AVFoundation
++import Foundation
++
++/// The click of a game card going into the console: a short scrape, then the latch. Made here as samples (no sound file), so the
++/// app carries no recording. Played through the default session, so the ring/silent switch mutes it like any app sound.
++@MainActor enum InsertSound {
++    private static var player: AVAudioPlayer?
++
++    /// Ready to play at once, so the click lands with the animation.
++    static func prepare() {
++        guard player == nil else { return }
++        player = try? AVAudioPlayer(data: wav(samples(rate: 44_100)))
++        player?.volume = 0.9
++        player?.prepareToPlay()
++    }
++
++    static func play() {
++        prepare()
++        player?.currentTime = 0
++        player?.play()
++    }
++
++    /// The sound, -1...1 at `rate`: 50 ms of soft scrape rising, a sharp click, and a duller latch 20 ms later.
++    static func samples(rate: Int) -> [Float] {
++        let count = Int(Double(rate) * 0.16)
++        var out = [Float](repeating: 0, count: count)
++        var seed: UInt32 = 0x9E37_79B9
++        func noise() -> Float {
++            seed = seed &* 1_664_525 &+ 1_013_904_223
++            return Float(Int32(bitPattern: seed)) / Float(Int32.max)
++        }
++        for i in 0..<count {
++            let t = Double(i) / Double(rate)
++            var v: Float = 0
++            if t < 0.05 { v += noise() * Float(0.04 + t * 1.2) * 0.5 }                    // the scrape, rising
++            if t >= 0.052 {                                                                // the click
++                let u = t - 0.052
++                v += Float(exp(-u / 0.0016)) * (0.75 * Float(sin(2 * .pi * 3_100 * u)) + 0.35 * noise())
++            }
++            if t >= 0.074 {                                                                // the latch
++                let u = t - 0.074
++                v += Float(exp(-u / 0.004)) * 0.45 * Float(sin(2 * .pi * 1_500 * u))
++            }
++            out[i] = max(-1, min(1, v))
++        }
++        return out
++    }
++
++    /// 16-bit mono PCM in a WAV container.
++    static func wav(_ samples: [Float], rate: Int = 44_100) -> Data {
++        var data = Data()
++        func put32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
++        func put16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
++        let bytes = UInt32(samples.count * 2)
++        data.append(contentsOf: Array("RIFF".utf8)); put32(36 + bytes); data.append(contentsOf: Array("WAVE".utf8))
++        data.append(contentsOf: Array("fmt ".utf8)); put32(16); put16(1); put16(1); put32(UInt32(rate)); put32(UInt32(rate * 2)); put16(2); put16(16)
++        data.append(contentsOf: Array("data".utf8)); put32(bytes)
++        for s in samples { put16(UInt16(bitPattern: Int16(s * Float(Int16.max)))) }
++        return data
++    }
++}
+diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
+index eb5e2ef..7687422 100644
+--- a/frontend-ios/Sources/ShellUI/LibraryView.swift
++++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
+@@ -50,6 +50,11 @@ public struct LibraryView: View {
+     /// The button-mapping card, while open.
+     @State private var padMapping: PadMappingState?
+     @State private var buttonTestOpen: Bool
++    /// Cover Flow: the chosen game's info panel, on the right, and its box opened in 3D over everything.
++    @State private var infoOpen: Bool
++    @State private var boxOpen: Bool
++    /// The screenshot open full screen from the info panel, by its place in the game's list.
++    @State private var shotIndex: Int?
+     @State private var focus: FocusAppearance
+     @State private var targets = FocusTargetBuffer()
+     @State private var settingsPosition = ScrollPosition()
+@@ -71,13 +76,16 @@ public struct LibraryView: View {
+                 input: ShellInput? = nil, initialSelection: String? = nil, initialDetailOpen: Bool = false,
+                 initialControllersOpen: Bool = false, initialShellSettingsOpen: Bool = false, initialFocusVisible: Bool = false,
+                 globalPadMap: PadMap = PadMap(), padSnapshot: PadSnapshot? = nil,
+-                initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false) {
++                initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false,
++                initialInfoOpen: Bool = false, initialBoxOpen: Bool = false) {
+         self.games = games
+         self.controllers = controllers
+         self.globalPadMap = globalPadMap
+         self.padSnapshot = padSnapshot
+         _padMapping = State(initialValue: initialPadMapping.map { PadMappingState(gameID: $0) })
+         _buttonTestOpen = State(initialValue: initialButtonTestOpen)
++        _infoOpen = State(initialValue: initialInfoOpen || initialBoxOpen)
++        _boxOpen = State(initialValue: initialBoxOpen)
+         self.actions = actions
+         self.input = input
+         let first = initialSelection ?? games.first?.id
+@@ -114,12 +122,38 @@ public struct LibraryView: View {
+                             }.padding(.top, 6).padding(.trailing, 16)
+                         }
+                 } else if let selected {
++                    let info = infoOpen && layout.isCoverFlow
++                    let panel = Self.infoWidth(width)
+                     library(selected, layout: layout, size: geometry.size, insets: insets)
+                         .frame(width: width, height: geometry.size.height)
++                        // The boxes step left, into the room the info panel leaves.
++                        .offset(x: info ? -panel / 2 : 0)
+                         .opacity(paneCovers && edgeDrag == 0 ? 0 : 1)
+                         .allowsHitTesting(!settingsOpen)
+                         .accessibilityHidden(settingsOpen || helpGameID != nil || deleteGameID != nil)
+                         .transformPreference(FocusTargets.self) { if settingsOpen { $0.removeAll() } }
++                    if info {
++                        // A tap beside the panel closes it.
++                        Color.black.opacity(0.18).ignoresSafeArea()
++                            .onTapGesture { closeInfo() }
++                            .accessibilityHidden(true)
++                            .transition(.opacity)
++                        GameInfoPanel(detail: selected, primary: { primary(selected) }, openBox: openBox,
++                                      openSettings: openSettings, openScreenshot: openShot, close: closeInfo)
++                            .padding(.trailing, insets.trailing)
++                            .frame(width: panel + insets.trailing)
++                            .frame(maxHeight: .infinity)
++                            .background {
++                                ShellPalette.background.opacity(0.94).ignoresSafeArea()
++                            }
++                            .overlay(alignment: .leading) { Rectangle().fill(ShellPalette.hairline).frame(width: 1).ignoresSafeArea() }
++                            .frame(maxWidth: .infinity, alignment: .trailing)
++                            .offset(x: insets.trailing)
++                            .allowsHitTesting(!settingsOpen)
++                            .accessibilityHidden(settingsOpen || boxOpen)
++                            .accessibilityAddTraits(.isModal)
++                            .transition(.move(edge: .trailing).combined(with: .opacity))
++                    }
+                     if panelOverLibrary {
+                         // The same dimming and dismissal as the Controllers overlay.
+                         Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
+@@ -147,6 +181,23 @@ public struct LibraryView: View {
+                         .accessibilityAddTraits(settingsOpen ? .isModal : [])
+                         .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
+                 }
++                if boxOpen, let selected {
++                    GameBoxView(game: selected.game, insert: { primary(selected) }, showInfo: { showInfoFromBox(selected) },
++                                close: closeBox)
++                        // Laid out in the safe area (its backdrop runs under the status bar by itself), so the title and Close
++                        // stay clear of the clock and the battery.
++                        .accessibilityAddTraits(.isModal)
++                        .transition(.opacity.combined(with: .scale(scale: 1.04)))
++                        .zIndex(5)
++                }
++                if let index = shotIndex, let selected, !selected.game.screens.isEmpty {
++                    ScreenshotViewer(title: selected.game.title, screens: selected.game.screens,
++                                     index: Binding(get: { min(index, selected.game.screens.count - 1) }, set: { shotIndex = $0 }),
++                                     close: closeShot)
++                        .accessibilityAddTraits(.isModal)
++                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
++                        .zIndex(6)
++                }
+                 if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
+                     Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
+                         .onTapGesture { closeHelp() }
+@@ -235,13 +286,16 @@ public struct LibraryView: View {
+             .transformPreference(FocusTargets.self) { values in
+                 values = values.filter { target in
+                     if buttonTestOpen { return target.id.hasPrefix("test.") }
++                    if shotIndex != nil { return target.id.hasPrefix("shot.") }
++                    if boxOpen { return target.id.hasPrefix("box.") }
+                     if padMapping != nil { return target.id.hasPrefix("map.") }
+                     if choice != nil { return target.id.hasPrefix("pick.") }
+                     if controllersOpen { return target.id.hasPrefix("ctl.") }
+                     if shellSettingsOpen { return target.id.hasPrefix("shs.") }
+                     if helpGameID != nil { return target.id.hasPrefix("help.") }
+                     if deleteGameID != nil { return target.id.hasPrefix("del.") }
+-                    return !["ctl.", "help.", "pick.", "shs.", "del.", "map.", "test."].contains { target.id.hasPrefix($0) }
++                    if infoOpen && !settingsOpen && layout.isCoverFlow { return target.id.hasPrefix("info.") }
++                    return !["ctl.", "help.", "pick.", "shs.", "del.", "map.", "test.", "info.", "box.", "shot."].contains { target.id.hasPrefix($0) }
+                 }
+             }
+             .coordinateSpace(name: "shell")
+@@ -265,6 +319,9 @@ public struct LibraryView: View {
+         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
+         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
+         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
++        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: infoOpen)
++        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: boxOpen)
++        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: shotIndex == nil)
+         .environment(\.shellPickChoice, { request in openChoice(request) })
+         .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
+         .environment(\.shellOpenButtonTest, { openButtonTest() })
+@@ -289,14 +346,16 @@ public struct LibraryView: View {
+         .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
+         .onDisappear { targets.values.removeAll() }
+         .onChange(of: games.map(\.id)) { _, ids in
+-            if !ids.contains(selectedID ?? "") { selectedID = ids.first; settingsOpen = false }
++            if !ids.contains(selectedID ?? "") { selectedID = ids.first; settingsOpen = false; infoOpen = false; boxOpen = false; shotIndex = nil }
+         }
+     }
+ 
+     @ViewBuilder private func library(_ selected: GameDetail, layout: ShellLayout, size: CGSize, insets: EdgeInsets) -> some View {
+         if layout.isCoverFlow {
++            // In Cover Flow the centred box opens: the game starts when its card goes into the console. A game that cannot start
++            // opens its info panel, which holds the way out.
+             CoverFlowView(games: games, selected: selected, controllers: controllers.count, showsHints: !touchMode, screenInsets: insets,
+-                          select: select, primary: primary, openSettings: openSettings, openControllers: openControllers,
++                          select: select, primary: openFromCover, openSettings: openSettings, openControllers: openControllers,
+                           openShellSettings: openShellSettings)
+                 .equatable()
+                 .transition(.opacity)
+@@ -406,7 +465,47 @@ public struct LibraryView: View {
+     }
+     private func closeSettings() {
+         settingsOpen = false
+-        focus.id = "lib.settings"
++        focus.id = infoOpen && layout.isCoverFlow ? "info.settings" : "lib.settings"
++    }
++    /// The info panel's width: a readable column that leaves the box in view beside it.
++    static func infoWidth(_ width: CGFloat) -> CGFloat { min(440, max(300, width * 0.42)) }
++    private func openInfo(_ detail: GameDetail) {
++        noteTouch()
++        if detail.id != selectedID { select(detail.id) }
++        infoOpen = true
++        focus.id = "info.play"
++    }
++    /// A screenshot of the info panel, full screen. B or Close goes back to it in the row.
++    private func openShot(_ index: Int) { noteTouch(); shotIndex = index; focus.id = "shot.close" }
++    private func closeShot() {
++        let index = shotIndex ?? 0
++        shotIndex = nil
++        focus.id = "info.shot.\(index)"
++    }
++    private func closeInfo() {
++        shotIndex = nil
++        infoOpen = false
++        boxOpen = false
++        focus.id = selected.map { "lib.tile.\($0.id)" }
++    }
++    private func openBox() { noteTouch(); boxOpen = true; focus.id = "box.cart" }
++    private func closeBox() {
++        boxOpen = false
++        focus.id = infoOpen ? "info.box" : selected.map { "lib.tile.\($0.id)" }
++    }
++    /// The centred cover: a game that can start opens its box, any other its info panel.
++    private func openFromCover(_ detail: GameDetail) {
++        guard detail.game.state == .playable else { openInfo(detail); return }
++        noteTouch()
++        if detail.id != selectedID { select(detail.id) }
++        infoOpen = false
++        boxOpen = true
++        focus.id = "box.cart"
++    }
++    /// Game info from the box: the panel, with the box closed behind it.
++    private func showInfoFromBox(_ detail: GameDetail) {
++        boxOpen = false
++        openInfo(detail)
+     }
+     private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
+     private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
+@@ -493,7 +592,9 @@ public struct LibraryView: View {
+         focus.id = "ctl.test"
+     }
+     private func back() {
+-        if buttonTestOpen { closeButtonTest() }
++        if shotIndex != nil { closeShot() }
++        else if boxOpen { closeBox() }
++        else if buttonTestOpen { closeButtonTest() }
+         else if padMapping?.row != nil { closePadRow() }
+         else if padMapping != nil { closePadMapping() }
+         else if choice != nil { closeChoice() }
+@@ -502,6 +603,7 @@ public struct LibraryView: View {
+         else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
+         else if shellSettingsOpen { closeShellSettings() }
+         else if settingsOpen { closeSettings() }
++        else if infoOpen { closeInfo() }
+         else { actions.onBack() }
+     }
+     private func handle(_ action: ShellInput.Action, from source: InputDevice) {
+@@ -522,6 +624,11 @@ public struct LibraryView: View {
+         case .settings: openSettings()
+         case .controllers: openControllers()
+         case .left, .right:
++            // Full screen, left and right go through the screenshots.
++            if let index = shotIndex, let count = selected?.game.screens.count {
++                shotIndex = min(count - 1, max(0, index + (action == .left ? -1 : 1)))
++                return
++            }
+             // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
+             if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
+                 let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
+@@ -541,6 +648,8 @@ public struct LibraryView: View {
+         if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
+     }
+     private var defaultFocus: String? {
++        if shotIndex != nil { return "shot.close" }
++        if boxOpen { return targets.values.contains { $0.id == "box.cart" } ? "box.cart" : "box.toggle" }
+         if buttonTestOpen { return "test.close" }
+         if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
+         if let choice { return "pick." + choice.row.value }
+@@ -549,6 +658,7 @@ public struct LibraryView: View {
+         if controllersOpen { return "ctl.close" }
+         if shellSettingsOpen { return "shs.close" }
+         if settingsOpen { return "set.back" }
++        if infoOpen && layout.isCoverFlow { return "info.play" }
+         return selected.map { "lib.tile.\($0.id)" } ?? "lib.controllers"
+     }
+ }
+diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
+index 2a2db87..fa5b1c8 100644
+--- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
++++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
+@@ -1,6 +1,126 @@
+ {
+   "sourceLanguage": "en",
+   "strings": {
++    "%lld h": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld 小时"
++          }
++        }
++      }
++    },
++    "%lld h %@": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h %@"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h %@"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h %@"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h %@"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld h %@"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld 小时 %@ 分"
++          }
++        }
++      }
++    },
++    "%lld min": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld min"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld min"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld min"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld min"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld min"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%lld 分钟"
++          }
++        }
++      }
++    },
+     "%lld of %lld": {
+       "localizations": {
+         "en": {
+@@ -382,6 +502,30 @@
+             "state": "translated",
+             "value": "返回"
+           }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Retour"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Zurück"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Indietro"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Tillbaka"
++          }
+         }
+       }
+     },
+@@ -985,6 +1129,86 @@
+         }
+       }
+     },
++    "Close the box": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Close the box"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Fermer la boîte"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Hülle schließen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Chiudi la custodia"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Stäng fodralet"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "合上卡盒"
++          }
++        }
++      }
++    },
++    "Closed": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Closed"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Fermée"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Geschlossen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Chiusa"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Stängd"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "已合上"
++          }
++        }
++      }
++    },
+     "Cloud saves": {
+       "localizations": {
+         "en": {
+@@ -1656,6 +1880,30 @@
+             "state": "translated",
+             "value": "详情"
+           }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Détails"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Details"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Dettagli"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Detaljer"
++          }
+         }
+       }
+     },
+@@ -2539,6 +2787,46 @@
+         }
+       }
+     },
++    "Game info": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Game info"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Infos du jeu"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spielinfos"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Info sul gioco"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spelinfo"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游戏信息"
++          }
++        }
++      }
++    },
+     "Game language": {
+       "localizations": {
+         "de": {
+@@ -2875,34 +3163,114 @@
+         }
+       }
+     },
+-    "Install a newer version of this app to play this game.": {
++    "Insert the game card": {
+       "localizations": {
+         "en": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Install a newer version of this app to play this game."
++            "value": "Insert the game card"
+           }
+         },
+-        "zh-Hans": {
++        "fr": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "安装本 App 的更新版本以游玩此游戏。"
++            "value": "Insérer la cartouche"
+           }
+-        }
+-      }
+-    },
+-    "Interface": {
+-      "localizations": {
+-        "en": {
++        },
++        "de": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Interface"
++            "value": "Spielkarte einlegen"
+           }
+         },
+-        "zh-Hans": {
++        "it": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "界面"
++            "value": "Inserisci la scheda di gioco"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sätt i spelkortet"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "插入游戏卡"
++          }
++        }
++      }
++    },
++    "Install a newer version of this app to play this game.": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Install a newer version of this app to play this game."
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "安装本 App 的更新版本以游玩此游戏。"
++          }
++        }
++      }
++    },
++    "Instruction booklet": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Instruction booklet"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Mode d'emploi"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spielanleitung"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Manuale di istruzioni"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Instruktionsbok"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "说明书"
++          }
++        }
++      }
++    },
++    "Interface": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Interface"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "界面"
+           }
+         }
+       }
+@@ -3107,6 +3475,46 @@
+         }
+       }
+     },
++    "Last played": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Last played"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Dernière partie"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Zuletzt gespielt"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ultima partita"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Senast spelat"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "上次游玩"
++          }
++        }
++      }
++    },
+     "Latin American Spanish": {
+       "localizations": {
+         "de": {
+@@ -3147,6 +3555,46 @@
+         }
+       }
+     },
++    "Launches": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Launches"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Lancements"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Starts"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Avvii"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Starter"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "启动次数"
++          }
++        }
++      }
++    },
+     "Left": {
+       "localizations": {
+         "de": {
+@@ -3589,6 +4037,46 @@
+         }
+       }
+     },
++    "Never": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Never"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Jamais"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Nie"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Mai"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Aldrig"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "从未"
++          }
++        }
++      }
++    },
+     "No additional content": {
+       "localizations": {
+         "en": {
+@@ -3845,6 +4333,86 @@
+         }
+       }
+     },
++    "Open": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Open"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ouverte"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Geöffnet"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Aperta"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Öppen"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "已打开"
++          }
++        }
++      }
++    },
++    "Open the box": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Open the box"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ouvrir la boîte"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Hülle öffnen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Apri la custodia"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Öppna fodralet"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "打开卡盒"
++          }
++        }
++      }
++    },
+     "Opens the button mapping": {
+       "localizations": {
+         "de": {
+@@ -4112,47 +4680,127 @@
+         "en": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Pipeline prebuild"
++            "value": "Pipeline prebuild"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Précompilation des pipelines"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Precompilazione pipeline"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Förbygg pipelines"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "预先构建管线"
++          }
++        }
++      }
++    },
++    "Play": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Play"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "开始"
++          }
++        }
++      }
++    },
++    "Play time and launches are counted by this app, on this device.": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Play time and launches are counted by this app, on this device."
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Le temps de jeu et les lancements sont comptés par cette app, sur cet appareil."
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spielzeit und Starts werden von dieser App auf diesem Gerät gezählt."
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Il tempo di gioco e gli avvii sono contati da questa app, su questo dispositivo."
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Speltid och starter räknas av den här appen, på den här enheten."
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游戏时长和启动次数由本应用在此设备上统计。"
++          }
++        }
++      }
++    },
++    "Played": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Played"
+           }
+         },
+         "fr": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Précompilation des pipelines"
++            "value": "Temps de jeu"
+           }
+         },
+-        "it": {
++        "de": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Precompilazione pipeline"
++            "value": "Gespielt"
+           }
+         },
+-        "sv": {
++        "it": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Förbygg pipelines"
++            "value": "Tempo di gioco"
+           }
+         },
+-        "zh-Hans": {
+-          "stringUnit": {
+-            "state": "translated",
+-            "value": "预先构建管线"
+-          }
+-        }
+-      }
+-    },
+-    "Play": {
+-      "localizations": {
+-        "en": {
++        "sv": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Play"
++            "value": "Speltid"
+           }
+         },
+         "zh-Hans": {
+           "stringUnit": {
+             "state": "translated",
+-            "value": "开始"
++            "value": "游戏时长"
+           }
+         }
+       }
+@@ -5417,6 +6065,46 @@
+         }
+       }
+     },
++    "Today": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Today"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Aujourd'hui"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Heute"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Oggi"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "I dag"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "今天"
++          }
++        }
++      }
++    },
+     "Top button": {
+       "localizations": {
+         "de": {
+@@ -5905,6 +6593,46 @@
+         }
+       }
+     },
++    "Yesterday": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Yesterday"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Hier"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Gestern"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ieri"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "I går"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "昨天"
++          }
++        }
++      }
++    },
+     "Your games": {
+       "localizations": {
+         "en": {
+@@ -5936,6 +6664,206 @@
+           }
+         }
+       }
++    },
++    "About the game": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "About the game"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "À propos du jeu"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Über das Spiel"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Informazioni sul gioco"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Om spelet"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "关于游戏"
++          }
++        }
++      }
++    },
++    "Screenshots": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Screenshots"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Captures d’écran"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Screenshots"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Immagini"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Skärmbilder"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "截图"
++          }
++        }
++      }
++    },
++    "Screenshot": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Screenshot"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Capture d’écran"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Screenshot"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Immagine"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Skärmbild"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "截图"
++          }
++        }
++      }
++    },
++    "Previous": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Previous"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Précédente"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Zurück"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Precedente"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Föregående"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "上一张"
++          }
++        }
++      }
++    },
++    "Next": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Next"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Suivante"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Weiter"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Successiva"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Nästa"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "下一张"
++          }
++        }
++      }
+     }
+   },
+   "version": "1.0"
+diff --git a/frontend-ios/Sources/ShellUI/ShellArtwork.swift b/frontend-ios/Sources/ShellUI/ShellArtwork.swift
+index 13cc218..8ac1912 100644
+--- a/frontend-ios/Sources/ShellUI/ShellArtwork.swift
++++ b/frontend-ios/Sources/ShellUI/ShellArtwork.swift
+@@ -26,6 +26,16 @@ public struct Artwork: Equatable, @unchecked Sendable {
+         self.init(id: id, image: image)
+     }
+ 
++    /// A large picture read from a file, scaled down to `maxPixels` on its longer side while it is decoded. Nil when ImageIO
++    /// cannot read it.
++    public init?(id: String, url: URL, maxPixels: Int) {
++        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
++        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixels,
++                                        kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true]
++        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
++        self.init(id: id, image: image)
++    }
++
+     public static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id && lhs.image === rhs.image }
+ 
+     var aspectRatio: CGFloat { CGFloat(image.width) / CGFloat(max(1, image.height)) }
+diff --git a/frontend-ios/Sources/ShellUI/ShellFormat.swift b/frontend-ios/Sources/ShellUI/ShellFormat.swift
+index 6c2c8d0..6d0d761 100644
+--- a/frontend-ios/Sources/ShellUI/ShellFormat.swift
++++ b/frontend-ios/Sources/ShellUI/ShellFormat.swift
+@@ -25,6 +25,33 @@ public enum ShellFormat {
+         }
+     }
+ 
++    /// The time played, for the info panel: "–" before the first minute, then "12 min", "1 h", "3 h 05".
++    public static func playTime(_ seconds: TimeInterval) -> String {
++        let minutes = Int(max(0, seconds) / 60)
++        if minutes < 1 { return "–" }
++        if minutes < 60 { return ShellStrings.text("\(minutes) min") }
++        let hours = minutes / 60, rest = minutes % 60
++        if rest == 0 { return ShellStrings.text("\(hours) h") }
++        return ShellStrings.text("\(hours) h \(String(format: "%02d", rest))")
++    }
++
++    /// The last session's day, short, for the info panel: "Today", "Yesterday", "3 days ago", "Never".
++    public static func lastPlayed(_ date: Date?, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
++        guard let date else { return ShellStrings.text("Never") }
++        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
++        switch days {
++        case ...0: return ShellStrings.text("Today")
++        case 1: return ShellStrings.text("Yesterday")
++        default:
++            let formatter = RelativeDateTimeFormatter()
++            formatter.locale = locale
++            formatter.calendar = calendar
++            formatter.unitsStyle = .full
++            formatter.dateTimeStyle = .numeric
++            return formatter.localizedString(for: calendar.startOfDay(for: date), relativeTo: calendar.startOfDay(for: now))
++        }
++    }
++
+     /// The parts that are not empty, joined by a middle dot.
+     public static func metaLine(_ parts: String?...) -> String {
+         parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+diff --git a/frontend-ios/Sources/ShellUI/ShellInputs.swift b/frontend-ios/Sources/ShellUI/ShellInputs.swift
+index 4533d0e..fe7bccf 100644
+--- a/frontend-ios/Sources/ShellUI/ShellInputs.swift
++++ b/frontend-ios/Sources/ShellUI/ShellInputs.swift
+@@ -24,8 +24,21 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+     public var state: GameState
+     /// Already localized, such as "Played today". Nil leaves the game out of Recently played.
+     public var recentlyPlayed: String?
++    /// How much the game was played on this device, for the game's info panel.
++    public var stats: PlayStats
++    /// A full-screen picture of the game's world, shown sharp behind Cover Flow while the game is chosen. Without one, the
++    /// backdrop is the blurred banner.
++    public var backdrop: Artwork?
++    /// The particles over the backdrop (`ambience.txt`), none by default.
++    public var ambience: Ambience
++    /// The game's screenshots (`screens/`), for the info panel. Files, not pictures: the panel decodes the ones it shows, so a
++    /// library of many games keeps none of them in memory.
++    public var screens: [URL]
++    /// A few lines about the game (`synopsis.txt`), for the info panel. Empty without one.
++    public var synopsis: String
+     public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
+-                state: GameState = .playable, recentlyPlayed: String? = nil) {
++                state: GameState = .playable, recentlyPlayed: String? = nil, stats: PlayStats = PlayStats(), backdrop: Artwork? = nil,
++                ambience: Ambience = .none, screens: [URL] = [], synopsis: String = "") {
+         self.id = id
+         self.title = title
+         self.subtitle = subtitle
+@@ -33,6 +46,25 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+         self.icon = icon
+         self.state = state
+         self.recentlyPlayed = recentlyPlayed
++        self.stats = stats
++        self.backdrop = backdrop
++        self.ambience = ambience
++        self.screens = screens
++        self.synopsis = synopsis
++    }
++}
++
++/// A game's play on this device, as the shell counts it: each Play is a launch, and a session lasts until the game was last
++/// seen running. The host supplies it, the views only show it.
++public struct PlayStats: Equatable, Sendable {
++    public var launches: Int
++    /// The time played, all sessions together.
++    public var seconds: TimeInterval
++    public var lastPlayed: Date?
++    public init(launches: Int = 0, seconds: TimeInterval = 0, lastPlayed: Date? = nil) {
++        self.launches = launches
++        self.seconds = seconds
++        self.lastPlayed = lastPlayed
+     }
+ }
+ 
+diff --git a/frontend-ios/Tests/ShellHostTests/GameFicheTests.swift b/frontend-ios/Tests/ShellHostTests/GameFicheTests.swift
+new file mode 100644
+index 0000000..a3bf545
+--- /dev/null
++++ b/frontend-ios/Tests/ShellHostTests/GameFicheTests.swift
+@@ -0,0 +1,39 @@
++import Foundation
++import Testing
++@testable import ShellHost
++
++/// A game's info-panel extras beside its banner: `screens/` (pictures, in name order, at most 8) and `synopsis.txt`.
++@Suite struct GameFicheTests {
++    @Test func screenshotsAreListedInNameOrderAndOnlyPictures() throws {
++        let box = try FrameworkBox()
++        let fw = try box.makeFramework()
++        let screens = fw.appendingPathComponent("screens")
++        for name in ["10.jpg", "2.jpg", "1.png", "notes.txt", ".hidden.jpg"] { try box.write("x", to: screens.appendingPathComponent(name)) }
++        let entry = try #require(GameCatalogue.scan(root: box.frameworks).first)
++        #expect(entry.screenURLs.map(\.lastPathComponent) == ["1.png", "2.jpg", "10.jpg"])
++    }
++
++    @Test func atMostEightScreenshots() throws {
++        let box = try FrameworkBox()
++        let fw = try box.makeFramework()
++        for i in 1...11 { try box.write("x", to: fw.appendingPathComponent("screens/\(i).jpg")) }
++        #expect(try #require(GameCatalogue.scan(root: box.frameworks).first).screenURLs.count == 8)
++    }
++
++    @Test func theSynopsisIsTrimmedAndAnEmptyOneIsNone() throws {
++        let box = try FrameworkBox()
++        let fw = try box.makeFramework()
++        try box.write("\n  Une aventure à travers le globe.  \n", to: fw.appendingPathComponent("synopsis.txt"))
++        let entry = try #require(GameCatalogue.scan(root: box.frameworks).first)
++        #expect(entry.synopsis == "Une aventure à travers le globe.")
++        try box.write(" \n", to: fw.appendingPathComponent("synopsis.txt"))
++        #expect(try #require(GameCatalogue.scan(root: box.frameworks).first).synopsis == nil)
++    }
++
++    @Test func withoutExtrasNothingIsListed() throws {
++        let box = try FrameworkBox()
++        try box.makeFramework()
++        let entry = try #require(GameCatalogue.scan(root: box.frameworks).first)
++        #expect(entry.screenURLs.isEmpty && entry.synopsis == nil)
++    }
++}
+diff --git a/frontend-ios/Tests/ShellHostTests/PlayStatsTests.swift b/frontend-ios/Tests/ShellHostTests/PlayStatsTests.swift
+new file mode 100644
+index 0000000..61bd6ec
+--- /dev/null
++++ b/frontend-ios/Tests/ShellHostTests/PlayStatsTests.swift
+@@ -0,0 +1,111 @@
++import Foundation
++import Testing
++import ShellUI
++@testable import ShellHost
++
++/// The info panel's figures: each Play is a launch, a session runs to its last sign of life, it is closed once at the next start
++/// of the app, and a launch that fails is taken back.
++@Suite struct PlayStatsTests {
++    private let t0 = Date(timeIntervalSince1970: 2_000_000)
++
++    @Test func aSessionEndsAtItsLastMark() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.alive(t0.addingTimeInterval(600))
++        #expect(store.launches == 1)
++        #expect(store.openSession == t0)
++        store.settle(lastSign: nil)
++        #expect(store.seconds == 600)
++        #expect(store.openSession == nil)
++    }
++
++    @Test func theLogsLastWriteCountsWhenItIsLater() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.alive(t0.addingTimeInterval(60))
++        store.settle(lastSign: t0.addingTimeInterval(1500))
++        #expect(store.seconds == 1500)
++    }
++
++    @Test func aSignFromBeforeTheSessionIsNotItsOwn() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.settle(lastSign: t0.addingTimeInterval(-3600))
++        #expect(store.seconds == 0)
++        #expect(store.launches == 1)
++    }
++
++    @Test func aSessionIsNeverLongerThanTwelveHours() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.settle(lastSign: t0.addingTimeInterval(3 * 86_400))
++        #expect(store.seconds == PlayStatsStore.longest)
++    }
++
++    @Test func sessionsAddUpAndAnOpenOneIsClosedByTheNextPlay() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.alive(t0.addingTimeInterval(300))
++        store.begin(t0.addingTimeInterval(4000))   // never settled: the next Play closes it at its own last mark
++        store.alive(t0.addingTimeInterval(4120))
++        store.settle(lastSign: nil)
++        #expect(store.launches == 2)
++        #expect(store.seconds == 420)
++    }
++
++    @Test func aMarkWithNoOpenSessionDoesNothing() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.alive(t0)
++        store.settle(lastSign: t0)
++        #expect(store.seconds == 0)
++        #expect(store.launches == 0)
++        #expect(box.defaults(Fixtures.orbit).object(forKey: PlayStatsStore.aliveKey) == nil)
++    }
++
++    @Test func aCancelledLaunchIsTakenBack() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.settle(lastSign: t0.addingTimeInterval(60))
++        store.begin(t0.addingTimeInterval(100))
++        store.cancel()
++        #expect(store.launches == 1)
++        #expect(store.seconds == 60)
++        #expect(store.openSession == nil)
++    }
++
++    @MainActor @Test func theStubLauncherCountsNoLaunch() async throws {
++        let box = try Sandbox()
++        try box.giveAppData()
++        let model = ShellHostModel(config: box.config(now: { Date(timeIntervalSince1970: 2_000_000) }))
++        await model.playNow(Fixtures.orbit)   // the stub fails: the game never started
++        let stats = try #require(model.details.first { $0.id == Fixtures.orbit }?.game.stats)
++        #expect(stats.launches == 0)
++        #expect(stats.seconds == 0)
++        #expect(stats.lastPlayed == Date(timeIntervalSince1970: 2_000_000), "the last-played date is kept, as before")
++    }
++
++    @MainActor @Test func theFirstLoadClosesTheSessionOfTheLastRun() throws {
++        let box = try Sandbox()
++        try box.giveAppData()
++        // A game played in the last run of the app: its session is open, last marked alive 10 minutes in.
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.alive(t0.addingTimeInterval(600))
++        let model = ShellHostModel(config: box.config())
++        let stats = try #require(model.details.first { $0.id == Fixtures.orbit }?.game.stats)
++        #expect(stats.launches == 1)
++        #expect(stats.seconds == 600)
++        #expect(store.openSession == nil)
++        // A reload while the app runs does not touch a session.
++        store.begin(t0.addingTimeInterval(1000))
++        model.reload()
++        #expect(store.openSession != nil)
++    }
++}
+diff --git a/frontend-ios/Tests/ShellUITests/AmbienceTests.swift b/frontend-ios/Tests/ShellUITests/AmbienceTests.swift
+new file mode 100644
+index 0000000..4371e05
+--- /dev/null
++++ b/frontend-ios/Tests/ShellUITests/AmbienceTests.swift
+@@ -0,0 +1,31 @@
++import Foundation
++import Testing
++@testable import ShellUI
++
++/// `ambience.txt`: one word, any case, spaces and a line end ignored; anything else means no particles.
++@Suite struct AmbienceTests {
++    @Test func theWordIsRead() {
++        #expect(Ambience(text: "sparkles") == .sparkles)
++        #expect(Ambience(text: " Dust\r\n") == .dust)
++        #expect(Ambience(text: "CLOUDS\n") == .clouds)
++        #expect(Ambience(text: "shards") == .shards)
++        #expect(Ambience(text: "grain") == .grain)
++    }
++
++    @Test func anythingElseIsNone() {
++        #expect(Ambience(text: nil) == Ambience.none)
++        #expect(Ambience(text: "") == Ambience.none)
++        #expect(Ambience(text: "fireworks") == Ambience.none)
++        #expect(Ambience(text: "sparkles please") == Ambience.none)
++    }
++
++    @Test func theNoiseIsFixedAndInRange() {
++        for i in 0..<500 {
++            let v = AmbienceLayer.noise(i, 3)
++            #expect(v >= 0 && v < 1)
++            #expect(v == AmbienceLayer.noise(i, 3))
++        }
++        #expect(AmbienceLayer.wrap(-0.25) == 0.75)
++        #expect(AmbienceLayer.wrap(1.5) == 0.5)
++    }
++}
+diff --git a/frontend-ios/Tests/ShellUITests/FormatTests.swift b/frontend-ios/Tests/ShellUITests/FormatTests.swift
+index 1c29841..a647667 100644
+--- a/frontend-ios/Tests/ShellUITests/FormatTests.swift
++++ b/frontend-ios/Tests/ShellUITests/FormatTests.swift
+@@ -14,6 +14,23 @@ import Testing
+         calendar.date(byAdding: .day, value: -days, to: calendar.date(bySettingHour: hour, minute: 0, second: 0, of: now)!)!
+     }
+ 
++    @Test func playTimeIsShort() {
++        #expect(ShellFormat.playTime(0) == "–")
++        #expect(ShellFormat.playTime(59) == "–")
++        #expect(ShellFormat.playTime(60) == "1 min")
++        #expect(ShellFormat.playTime(12 * 60 + 30) == "12 min")
++        #expect(ShellFormat.playTime(3600) == "1 h")
++        #expect(ShellFormat.playTime(3 * 3600 + 5 * 60) == "3 h 05")
++        #expect(ShellFormat.playTime(-5) == "–")
++    }
++
++    @Test func lastPlayedIsShort() {
++        #expect(ShellFormat.lastPlayed(nil, now: now, calendar: calendar, locale: en) == "Never")
++        #expect(ShellFormat.lastPlayed(ago(0, hour: 0), now: now, calendar: calendar, locale: en) == "Today")
++        #expect(ShellFormat.lastPlayed(ago(1), now: now, calendar: calendar, locale: en) == "Yesterday")
++        #expect(ShellFormat.lastPlayed(ago(3), now: now, calendar: calendar, locale: en) == "3 days ago")
++    }
++
+     @Test func versionHasItsWord() {
+         #expect(ShellFormat.version("1.0.0") == "Version 1.0.0")
+         #expect(ShellFormat.version("") == "")
+diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
+new file mode 100644
+index 0000000..8c8d9ce
+--- /dev/null
++++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
+@@ -0,0 +1,126 @@
++import XCTest
++
++/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
++/// captured for review. With TEST_RUNNER_SHOT_DIR set, each capture is also written there as a PNG.
++@MainActor final class LibraryBoxCaptureTests: XCTestCase {
++    private let app = XCUIApplication()
++    private var directory: String? { ProcessInfo.processInfo.environment["SHOT_DIR"] }
++    private var prefix: String { ProcessInfo.processInfo.environment["SHOT_PREFIX"] ?? (UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "phone") }
++
++    override func setUp() {
++        continueAfterFailure = false
++        XCUIDevice.shared.orientation = .landscapeLeft
++    }
++
++    private func shot(_ name: String) {
++        let screenshot = XCUIScreen.main.screenshot()
++        let attachment = XCTAttachment(screenshot: screenshot)
++        attachment.name = name
++        attachment.lifetime = .keepAlways
++        add(attachment)
++        if let directory {
++            try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(prefix)-\(name).png"))
++        }
++    }
++    private func launch(_ arguments: [String]) {
++        app.terminate()
++        app.launchArguments = arguments
++        app.launch()
++        XCTAssertTrue(app.buttons["controllers.open"].firstMatch.waitForExistence(timeout: 15))
++        sleep(2)
++    }
++    /// The demo answers Play with an alert: the game would start here.
++    private func expectPlay(_ name: String) {
++        let alert = app.alerts.firstMatch
++        XCTAssertTrue(alert.waitForExistence(timeout: 8), "Play was not requested")
++        shot(name)
++        alert.buttons.firstMatch.tap()
++        sleep(1)
++    }
++
++    /// Touch: a tap on the middle cover opens its box (captured while it opens); the round button closes and opens it; Game
++    /// info shows the panel and Open the box comes back; a tap on the card flies it into the console (captured) and plays.
++    func testTouch() {
++        // The particles only where the review looks at them (the tablet's touch run); every other run is still, so the app goes idle between taps.
++        launch(["--screen", "library"] + (UIDevice.current.userInterfaceIdiom == .pad ? [] : ["--still"]))
++        shot("touch-01-library")
++        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.42)).tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 5))
++        for index in 1...4 {
++            usleep(250_000)
++            shot("touch-02-box-opening-\(index)")
++        }
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 5))
++        sleep(1)
++        shot("touch-03-box-open")
++        app.buttons["box.toggle"].tap()
++        sleep(2)
++        shot("touch-04-box-closed-again")
++        app.buttons["box.toggle"].tap()
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 5))
++        app.buttons["box.info"].tap()
++        XCTAssertTrue(app.buttons["info.play"].waitForExistence(timeout: 5))
++        XCTAssertFalse(app.buttons["box.toggle"].exists)
++        sleep(1)
++        shot("touch-05-info-panel")
++        // What the game is about: the synopsis and the screenshots, one opened full screen and the next one swiped to.
++        let first = app.buttons["info.shot.0"]
++        XCTAssertTrue(first.waitForExistence(timeout: 5))
++        if !first.isHittable { app.buttons["info.play"].swipeUp() }
++        sleep(1)
++        shot("touch-05b-info-about")
++        first.tap()
++        XCTAssertTrue(app.buttons["shot.close"].waitForExistence(timeout: 5))
++        sleep(1)
++        shot("touch-05c-screenshot")
++        app.windows.firstMatch.swipeLeft()
++        sleep(1)
++        shot("touch-05d-screenshot-swiped")
++        app.buttons["shot.close"].tap()
++        XCTAssertTrue(app.buttons["info.box"].waitForExistence(timeout: 5))
++        if !app.buttons["info.box"].isHittable { app.buttons["info.shot.0"].swipeDown() }
++        app.buttons["info.box"].tap()
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
++        sleep(1)
++        app.buttons["box.cart"].tap()
++        // Lift, flight and click (about 0.8 s), then the slot flares and the screen fades to black (0.9 s).
++        for index in 1...8 {
++            usleep(180_000)
++            shot("touch-06-card-inserting-\(index)")
++        }
++        expectPlay("touch-07-played")
++    }
++
++    /// Controller (the demo's on-screen stand-ins for its buttons): right moves to the next game, A opens its box, A on the
++    /// card (the focus once the box is open) plays; B closes the box and goes back.
++    func testController() {
++        launch(["--screen", "library", "--input-test", "--still"])
++        app.buttons["qa.input.right"].tap()
++        sleep(1)
++        app.buttons["qa.input.activate"].tap()
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
++        sleep(1)
++        shot("pad-01-box-open-card-focused")
++        app.buttons["qa.input.back"].tap()
++        sleep(1)
++        XCTAssertFalse(app.buttons["box.toggle"].exists)
++        shot("pad-02-library")
++        app.buttons["qa.input.activate"].tap()
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
++        sleep(1)
++        app.buttons["qa.input.activate"].tap()
++        expectPlay("pad-03-played")
++    }
++
++    /// A game with no statistics yet and one that cannot start (its cover opens the info panel), and a box opened from the
++    /// launch arguments.
++    func testOtherGames() {
++        launch(["--screen", "info", "--select", "drift", "--still"])
++        shot("other-01-info-no-stats")
++        launch(["--screen", "info", "--select", "paper", "--still"])
++        shot("other-02-info-needs-data")
++        launch(["--screen", "box", "--select", "tide", "--still"])
++        sleep(2)
++        shot("other-03-box-tide")
++    }
++}
