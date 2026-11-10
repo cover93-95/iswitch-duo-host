@@ -1036,7 +1036,7 @@ index 8651917..598d4f3 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..e833bf7
+index 0000000..6c4fa25
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 @@ -0,0 +1,493 @@
@@ -1466,7 +1466,7 @@ index 0000000..e833bf7
 +    var body: some View {
 +        if game.isDisc { GameDisc(game: game, diameter: width).frame(width: width, height: height) } else { card }
 +    }
-+    private var card: some View {
++    @ViewBuilder private var card: some View {
 +        let shape = GameCardShape(notch: width * 0.14)
 +        ZStack(alignment: .top) {
 +            shape.fill(LinearGradient(colors: [Color(white: 0.24), Color(white: 0.12)], startPoint: .top, endPoint: .bottom))
