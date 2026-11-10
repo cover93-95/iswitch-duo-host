@@ -1,0 +1,139 @@
+# Branche de test uniquement (oot-test-library) : la bibliothèque (boîte 3D, fiches, fondu) dans le lanceur d Ocarina (NX2Apple 5c0db6cd).
+# Ne construit ni shell ni IPA : seulement les tests du paquet du lanceur (swift test) et l'app de démonstration du lanceur
+# (des jeux fictifs, aucune donnée de jeu) sur simulateur, pour des captures d'écran et des vidéos du rendu.
+# Le workflow de production (build-shell.yml) n'est pas modifié.
+# Ne jamais ajouter ici de fichier de jeu, de clé, ni rien qui en soit extrait.
+name: Test Ocarina library
+
+on:
+  push:
+    branches:
+      - oot-test-library
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+  EXPECTED_XCODE: Xcode 27.2
+  NX2APPLE_COMMIT: 5c0db6cde8bd648f313d404dac45ac55d8c2a62f
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  render:
+    name: Launcher tests and render
+    runs-on: xcode-27   # Runner standard. Jamais xcode-27-xlarge, facturé à part.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LNPANDY/NX2Apple
+          ref: ${{ env.NX2APPLE_COMMIT }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: own
+          persist-credentials: false
+
+      - name: Toolchain and the launcher's changes
+        run: |
+          xcodebuild -version
+          test "$(xcodebuild -version | head -1)" = "$EXPECTED_XCODE"
+          git apply "$GITHUB_WORKSPACE/own/frontend-ios.diff"
+          git status --short
+          mkdir -p "$RUNNER_TEMP/out/shots" "$RUNNER_TEMP/out/logs"
+
+      - name: Package tests (swift test)
+        id: unit
+        working-directory: frontend-ios
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee "$RUNNER_TEMP/out/logs/swift-test.log" | grep -E "Test run|passed|failed|error:" | tail -40
+
+      - name: Demo app for the simulator
+        if: ${{ !cancelled() }}
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate --spec frontend-ios/Demo/project.yml
+          python3 - <<'PY' > "$RUNNER_TEMP/devices.env"
+          import json, subprocess
+          runtimes = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '-j']))['devices']
+          ios = sorted((r for r in runtimes if 'iOS' in r), reverse=True)
+          def pick(*names):
+              for r in ios:
+                  for name in names:
+                      for d in runtimes[r]:
+                          if name in d['name']:
+                              return d['udid'], d['name'], r
+              raise SystemExit(f'no simulator named {names}')
+          tablet = pick('iPad mini', 'iPad Air', 'iPad')
+          phone = pick('iPhone 17 Pro', 'iPhone 17', 'iPhone')
+          print(f'TABLET={tablet[0]}\nTABLET_NAME="{tablet[1]}"\nPHONE={phone[0]}\nPHONE_NAME="{phone[1]}"\nRUNTIME="{tablet[2]}"')
+          PY
+          cat "$RUNNER_TEMP/devices.env"
+          cat "$RUNNER_TEMP/devices.env" >> "$GITHUB_ENV"
+          source "$RUNNER_TEMP/devices.env"
+          set -o pipefail
+          xcodebuild build-for-testing -project frontend-ios/Demo/ShellDemo.xcodeproj -scheme ShellDemo \
+            -destination "id=$TABLET" -destination "id=$PHONE" -derivedDataPath "$RUNNER_TEMP/dd" \
+            2>&1 | tee "$RUNNER_TEMP/out/logs/build-for-testing.log" | grep -E "error:|warning: .*(GameBoxView|GameInfoPanel|LibraryView|PlayStats)|BUILD|TEST BUILD" || true
+          grep -q "TEST BUILD SUCCEEDED" "$RUNNER_TEMP/out/logs/build-for-testing.log"
+
+      - name: Render on the tablet (video and screenshots)
+        if: ${{ !cancelled() }}
+        run: |
+          xcrun simctl boot "$TABLET" || true
+          xcrun simctl bootstatus "$TABLET" -b
+          run() {   # $1 test, $2 video name or empty
+            if [ -n "$2" ]; then
+              xcrun simctl io "$TABLET" recordVideo --codec=h264 --force "$RUNNER_TEMP/out/$2.mp4" & rec=$!
+              sleep 2
+            fi
+            status=0
+            TEST_RUNNER_SHOT_DIR="$RUNNER_TEMP/out/shots" TEST_RUNNER_SHOT_PREFIX=ipad \
+              xcodebuild test-without-building -project frontend-ios/Demo/ShellDemo.xcodeproj -scheme ShellDemo \
+              -destination "id=$TABLET" -derivedDataPath "$RUNNER_TEMP/dd" \
+              -only-testing:"ShellDemoUITests/LibraryBoxCaptureTests/$1" -resultBundlePath "$RUNNER_TEMP/out/logs/ipad-$1.xcresult" \
+              > "$RUNNER_TEMP/out/logs/ipad-$1.log" 2>&1 || status=$?
+            if [ -n "$2" ]; then sleep 1; kill -INT $rec; wait $rec || true; fi
+            grep -E "Test Case|error|failed|passed" "$RUNNER_TEMP/out/logs/ipad-$1.log" | tail -20 || true
+            return $status
+          }
+          fail=0
+          run testTouch ipad-touch || fail=1
+          run testController ipad-controller || fail=1
+          run testOtherGames "" || fail=1
+          ls -la "$RUNNER_TEMP/out" "$RUNNER_TEMP/out/shots"
+          exit $fail
+
+      # The phone simulator stays upright, where the library is a column with no box view: only the scenarios opened from the launch arguments.
+      - name: Render on the phone (screenshots)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15   # the first run hung here: never block the upload
+        run: |
+          xcrun simctl boot "$PHONE" || true
+          xcrun simctl bootstatus "$PHONE" -b
+          status=0
+          TEST_RUNNER_SHOT_DIR="$RUNNER_TEMP/out/shots" TEST_RUNNER_SHOT_PREFIX=phone \
+            xcodebuild test-without-building -project frontend-ios/Demo/ShellDemo.xcodeproj -scheme ShellDemo \
+            -destination "id=$PHONE" -derivedDataPath "$RUNNER_TEMP/dd" \
+            -only-testing:ShellDemoUITests/LibraryBoxCaptureTests/testOtherGames \
+            > "$RUNNER_TEMP/out/logs/phone.log" 2>&1 || status=$?
+          grep -E "Test Case|error|failed|passed" "$RUNNER_TEMP/out/logs/phone.log" | tail -20 || true
+          exit $status
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: oot-library-render
+          path: |
+            ${{ runner.temp }}/out/*.mp4
+            ${{ runner.temp }}/out/shots
+            ${{ runner.temp }}/out/logs/*.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,0 +1,14 @@
+*.nsp
+*.xci
+*.nsz
+*.xcz
+*.nup
+*.nca
+*.nso
+*.nro
+*.keys
+*.ipa
+*.metallib
+*.p12
+*.mobileprovision
+*.framework/
