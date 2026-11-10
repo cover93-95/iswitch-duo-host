@@ -1602,7 +1602,7 @@ index 0000000..01d2303
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index 13b4f1f..9dacada 100644
+index 13b4f1f..f5d85f4 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -58,6 +58,11 @@ public struct LibraryView: View {
@@ -1683,7 +1683,7 @@ index 13b4f1f..9dacada 100644
                  // removed loses its order, and its exit (the slide out of Controllers and the shell settings) played
                  // behind the library, so it looked cut off.
 +                if boxOpen, let selected { Group {
-+                    GameBoxView(game: selected.game, insert: { act(selected) }, showInfo: { showInfoFromBox(selected) },
++                    GameBoxView(game: selected.game, insert: { act(selected, pressChecked: true) }, showInfo: { showInfoFromBox(selected) },
 +                                close: closeBox)
 +                        // Laid out in the safe area (its backdrop runs under the status bar by itself), so the title and Close
 +                        // stay clear of the clock and the battery.
@@ -1732,7 +1732,7 @@ index 13b4f1f..9dacada 100644
                            openShellSettings: openShellSettings)
                  .equatable()
                  .transition(.opacity)
-@@ -483,7 +537,12 @@ public struct LibraryView: View {
+@@ -483,7 +537,13 @@ public struct LibraryView: View {
      /// echo (a tap in the settings pane right after A) ends the window, and Play behind the pane started the game.
      private var libraryPressAllowed: Bool { FocusLayer.libraryTakesPress(fromShell: gate.handling, under: topLayer) }
      private func primary(_ detail: GameDetail) {
@@ -1740,13 +1740,14 @@ index 13b4f1f..9dacada 100644
 +        guard libraryPressAllowed else { return }
 +        act(detail)
 +    }
-+    /// The game's one action, from the library, its box (the card going in) or its info panel. Not from the system's echo.
-+    private func act(_ detail: GameDetail) {
-+        guard noteTouch() else { return }
++    /// The game's one action, from the library, its box (the card going in) or its info panel. Not from the system's echo: the box
++    /// checks its card's press itself (`pressChecked`), and the game starts after the card's flight, outside any press.
++    private func act(_ detail: GameDetail, pressChecked: Bool = false) {
++        if !pressChecked { guard noteTouch() else { return } }
          if detail.game.state.needsHelp { openHelp(detail.id); return }
          switch detail.game.state {
          case .playable: actions.onPlay(detail.id)
-@@ -523,7 +582,52 @@ public struct LibraryView: View {
+@@ -523,7 +583,52 @@ public struct LibraryView: View {
      private func closeSettings() {
          guard !fromSystemEcho else { return }
          settingsOpen = false
@@ -1800,7 +1801,7 @@ index 13b4f1f..9dacada 100644
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; guard noteTouch() else { return }; controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { guard noteTouch() else { return }; shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -622,7 +726,9 @@ public struct LibraryView: View {
+@@ -622,7 +727,9 @@ public struct LibraryView: View {
      }
      private func back() {
          guard !fromSystemEcho else { return }
@@ -1811,7 +1812,7 @@ index 13b4f1f..9dacada 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -634,6 +740,7 @@ public struct LibraryView: View {
+@@ -634,6 +741,7 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -1819,7 +1820,7 @@ index 13b4f1f..9dacada 100644
          else { actions.onBack() }
      }
      private func handle(_ action: ShellInput.Action, from source: InputDevice) {
-@@ -664,6 +771,11 @@ public struct LibraryView: View {
+@@ -664,6 +772,11 @@ public struct LibraryView: View {
          case .settings: openSettings()
          case .controllers: openControllers()
          case .left, .right:
@@ -1831,7 +1832,7 @@ index 13b4f1f..9dacada 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -688,7 +800,10 @@ public struct LibraryView: View {
+@@ -688,7 +801,10 @@ public struct LibraryView: View {
          if shellSettingsOpen { return .shellSettings }
          if helpGameID != nil { return .help }
          if deleteGameID != nil { return .delete }
@@ -1842,7 +1843,7 @@ index 13b4f1f..9dacada 100644
          return nil
      }
      private func move(_ action: ShellInput.Action) {
-@@ -701,6 +816,8 @@ public struct LibraryView: View {
+@@ -701,6 +817,8 @@ public struct LibraryView: View {
      }
      private var defaultFocus: String? {
          if buttonTestOpen { return "test.close" }
@@ -1851,7 +1852,7 @@ index 13b4f1f..9dacada 100644
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
          if touchLayout != nil { return "lay.done" }
-@@ -709,6 +826,7 @@ public struct LibraryView: View {
+@@ -709,6 +827,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -1860,7 +1861,7 @@ index 13b4f1f..9dacada 100644
      }
  }
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 5859253..ce52e58 100644
+index 5859253..81749de 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -9400,6 +9400,886 @@
@@ -2605,7 +2606,7 @@ index 5859253..ce52e58 100644
 +        "de": {
 +          "stringUnit": {
 +            "state": "translated",
-+            "value": "Screenshots"
++            "value": "Bildschirmfotos"
 +          }
 +        },
 +        "it": {
@@ -2645,7 +2646,7 @@ index 5859253..ce52e58 100644
 +        "de": {
 +          "stringUnit": {
 +            "state": "translated",
-+            "value": "Screenshot"
++            "value": "Bildschirmfoto"
 +          }
 +        },
 +        "it": {
@@ -3089,12 +3090,24 @@ index 1c29841..a647667 100644
      @Test func versionHasItsWord() {
          #expect(ShellFormat.version("1.0.0") == "Version 1.0.0")
          #expect(ShellFormat.version("") == "")
+diff --git a/frontend-ios/Tests/ShellUITests/ShellStringsTests.swift b/frontend-ios/Tests/ShellUITests/ShellStringsTests.swift
+index 172c2eb..a236bb3 100644
+--- a/frontend-ios/Tests/ShellUITests/ShellStringsTests.swift
++++ b/frontend-ios/Tests/ShellUITests/ShellStringsTests.swift
+@@ -23,6 +23,7 @@ import Testing
+         "Minus": ["de", "sv"], "Plus": ["de", "sv", "fr"],            // the Switch's buttons
+         "Version %@": ["de", "sv", "fr"],
+         "OK": ["de", "sv", "fr", "it"],
++        "%lld h": ["de", "sv", "fr", "it"], "%lld h %@": ["de", "sv", "fr", "it"], "%lld min": ["de", "sv", "fr", "it"],   // units
+     ]
+ 
+     private func table(_ name: String, in folder: String) throws -> [String: Any] {
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..8c8d9ce
+index 0000000..d7b776d
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,127 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -3128,7 +3141,8 @@ index 0000000..8c8d9ce
 +    }
 +    /// The demo answers Play with an alert: the game would start here.
 +    private func expectPlay(_ name: String) {
-+        let alert = app.alerts.firstMatch
++        // By its title: the open box is a modal view, which the automation can also report as an alert.
++        let alert = app.alerts["Demo action"]
 +        XCTAssertTrue(alert.waitForExistence(timeout: 8), "Play was not requested")
 +        shot(name)
 +        alert.buttons.firstMatch.tap()

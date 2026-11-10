@@ -53,7 +53,8 @@ jobs:
         working-directory: frontend-ios
         run: |
           set -o pipefail
-          swift test 2>&1 | tee "$RUNNER_TEMP/out/logs/swift-test.log" | grep -E "Test run|passed|failed|error:" | tail -40
+          # RomfsLanguagesTests' engine-profile case runs the engine's settings.py, which needs "tools/engine.py sync": not here.
+          swift test --skip thePinnedEnginesFallbackRowIsRecognizedAndNarrowed 2>&1 | tee "$RUNNER_TEMP/out/logs/swift-test.log" | grep -E "Test run|passed|failed|error:" | tail -40
 
       - name: Demo app for the simulator
         if: ${{ !cancelled() }}
