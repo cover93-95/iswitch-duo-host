@@ -106,8 +106,9 @@ jobs:
           }
           fail=0
           run testTouch ipad-touch || fail=1
-          run testController ipad-controller || fail=1
+          run testController "" || fail=1
           run testOtherGames "" || fail=1
+          run testPlatforms "" || fail=1
           ls -la "$RUNNER_TEMP/out" "$RUNNER_TEMP/out/shots"
           exit $fail
 
