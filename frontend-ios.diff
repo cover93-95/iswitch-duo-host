@@ -1343,10 +1343,10 @@ index 0000000..cd96a16
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameScreens.swift b/frontend-ios/Sources/ShellUI/GameScreens.swift
 new file mode 100644
-index 0000000..2eb5232
+index 0000000..055f5bd
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameScreens.swift
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,159 @@
 +import SwiftUI
 +
 +/// Decodes a game's screenshots off the main thread, at the size they are drawn, and keeps the recent ones. The tile only lists
@@ -1459,7 +1459,9 @@ index 0000000..2eb5232
 +                        .tag(i)
 +                }
 +            }
++            #if os(iOS)
 +            .tabViewStyle(.page(indexDisplayMode: .never))
++            #endif
 +            .ignoresSafeArea()
 +            VStack {
 +                HStack(alignment: .center) {
