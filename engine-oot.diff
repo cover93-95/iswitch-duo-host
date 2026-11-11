@@ -24613,7 +24613,7 @@ index 167cc49..aa642a0 100644
  void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arrange:layout]; }
  void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
 diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
-index fad49fd..d23d58c 100644
+index fad49fd..5640613 100644
 --- a/dm/ios/Sources/front_ios.m
 +++ b/dm/ios/Sources/front_ios.m
 @@ -165,6 +165,16 @@ static void launcher_done(void) { [g_root startGame]; }
@@ -24638,7 +24638,7 @@ index fad49fd..d23d58c 100644
          CGRect s = CGRectIntersection(layout.controls, UIEdgeInsetsInsetRect(b, gameInsets));
          CGFloat u = layout.separated ? MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3) : MIN(b.size.height / 430.0, 1.3);
 -        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
-+        // as wide as its lines, up to the − key (DmGamepad.m: its centre 52 units left of the midline, 50 wide); two lines (frame rate and thermal state, battery) centred on the row
++        // as wide as its lines, up to the − key (DmGamepad.m: its centre 52 units left of the midline, 50 wide); one line (frame rate and thermal state) centred on the row
 +        CGFloat x = floor(CGRectGetMinX(s) + 130 * u), room = CGRectGetMidX(s) - 77 * u - 8 - x;
 +        CGSize fit = [self.fps sizeThatFits:CGSizeMake(MAX(room - 12, 64), 60)];
 +        CGFloat w = MIN(MAX(ceil(fit.width) + 12, 64), MAX(room, 64)), h = ceil(fit.height) + 4;
@@ -24646,13 +24646,14 @@ index fad49fd..d23d58c 100644
      }
  }
  - (void)showFPS:(BOOL)on {   // the frame-rate counter: DM_SHOW_FPS at Play, then the in-game menu
-@@ -326,22 +340,60 @@ static void front_ios_power_watch(void) {
+@@ -326,22 +340,62 @@ static void front_ios_power_watch(void) {
      LOG("front end: thermal state %d, brightness %.2f, Low Power Mode %s", dm_thermal_now(), g_brightness, dm_low_power_now() ? "on" : "off");
  }
  
 -// Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
 +// Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted),
-+// with the device's thermal state (iOS gives apps no temperature, only NSProcessInfo's four levels), the battery level and the play time it leaves at the rate it has fallen.
++// with the device's thermal state (iOS gives apps no temperature, only NSProcessInfo's four levels), on one line. The battery is not shown (the player asked for the frame rate
++// and the heat only): its level and the play time it leaves are still read every second and its steps logged, for the reports.
  // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 (the launcher, Documents/env.txt) overrides that without a rebuild,
  // and the in-game menu turns it on and off ([DmRootVC showFPS:])
  uint64_t mtl_present_count(void);
@@ -24684,7 +24685,7 @@ index fad49fd..d23d58c 100644
      UILabel *l = [UILabel new];
 -    l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
 +    l.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
-+    l.numberOfLines = 2; l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.7;
++    l.numberOfLines = 1; l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.7;
      l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
 -    l.text = @"-- fps";
 -    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
@@ -24703,7 +24704,8 @@ index fad49fd..d23d58c 100644
 -    LOG("front end: frame-rate counter on");
 +        int th = dm_thermal_now();
 +        static int last_th = -1; if (th != last_th) { LOG("front end: thermal state %d (%s)", th, thermal[th >= 0 && th <= 3 ? th : 0].UTF8String); last_th = th; }
-+        NSString *text = [NSString stringWithFormat:@"%@ fps · 🌡 %@\n%@", fps, thermal[th >= 0 && th <= 3 ? th : 0], battery_line(&bat, now)];
++        (void)battery_line(&bat, now);   // logged, not shown
++        NSString *text = [NSString stringWithFormat:@"%@ fps · 🌡 %@", fps, thermal[th >= 0 && th <= 3 ? th : 0]];
 +        if (![text isEqualToString:l.text]) { BOOL grew = text.length != l.text.length; l.text = text; if (grew) [l.superview setNeedsLayout]; }
 +    };
 +    update();
@@ -24712,11 +24714,11 @@ index fad49fd..d23d58c 100644
 +    // In the common modes: while UIKit tracks a touch (the touch controls) the main run loop runs in its tracking mode, where a timer of the default mode does not fire, and the
 +    // label would stop updating while a finger is down
 +    [NSRunLoop.mainRunLoop addTimer:[NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { (void)t; update(); }] forMode:NSRunLoopCommonModes];
-+    LOG("front end: frame-rate counter on (with thermal state and battery)");
++    LOG("front end: frame-rate counter on (with thermal state; battery logged, not shown)");
      return l;
  }
  
-@@ -535,11 +587,23 @@ static void save_sync_background(void) {
+@@ -535,11 +589,23 @@ static void save_sync_background(void) {
      });
  }
  
