@@ -1056,10 +1056,10 @@ index 8651917..9a1a6da 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..e039037
+index 0000000..5b27369
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,531 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1101,7 +1101,7 @@ index 0000000..e039037
 +            let inTray = CGPoint(x: caseCentre.x + width / 2,
 +                                 y: caseCentre.y + height / 2 - height * CaseTray.bottom(disc, width: width, height: height) - card.height * 0.55)
 +            // The console's slot, at the top right: the card arrives under it at `scale` and goes in upward.
-+            let scale: CGFloat = 0.55
++            let scale: CGFloat = disc ? 0.5 : 0.55
 +            let slot = CGPoint(x: size.width - 40 - card.width * scale * 0.6, y: 92)
 +            ZStack {
 +                RadialGradient(colors: [Color(red: 0.16, green: 0.17, blue: 0.2).opacity(0.94), .black.opacity(0.94)],
@@ -1143,7 +1143,8 @@ index 0000000..e039037
 +                    ZStack {
 +                        GameCard(game: game, width: card.width, height: card.height)
 +                            .scaleEffect(phase == .idle ? 1 : phase == .lifted ? 1.12 : scale)
-+                            .rotationEffect(.degrees(phase == .lifted ? -4 : 0))
++                            // A disc turns a little as it goes, slowly, as a disc would; a card only tilts as it lifts
++                            .rotationEffect(.degrees(disc ? (phase == .lifted ? 20 : phase == .flying ? 140 : 210) : (phase == .lifted ? -4 : 0)))
 +                            .shadow(color: .black.opacity(0.5), radius: phase == .lifted ? 24 : 8, y: phase == .lifted ? 14 : 4)
 +                            .position(phase == .lifted ? CGPoint(x: inTray.x, y: inTray.y - card.height * 0.18)
 +                                      : phase == .flying ? CGPoint(x: slot.x, y: slot.y + card.height * scale / 2 + 6)
@@ -1236,13 +1237,28 @@ index 0000000..e039037
 +            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { insert() }
 +            return
 +        }
++        if game.isDisc { playDisc(); return }
 +        withAnimation(.easeOut(duration: 0.18)) { phase = .lifted } completion: {
 +            withAnimation(.easeInOut(duration: 0.5)) { phase = .flying } completion: {
 +                withAnimation(.easeIn(duration: 0.14)) { phase = .inside } completion: {
-+                    InsertSound.play(disc: game.isDisc)
++                    InsertSound.play(disc: false)
 +                    clicks += 1
 +                    // The slot flares, then the screen fades to black and the game starts in the dark.
 +                    withAnimation(.easeIn(duration: 0.6).delay(0.3)) { blackout = true } completion: { start() }
++                }
++            }
++        }
++    }
++    /// A disc, slower than a card and in step with the drive's sound (about 2 s): it lifts from its hub, glides to the drive
++    /// without a jump in size, and the drive draws it in while the sound plays from its first touch; the screen goes dark as the
++    /// sound fades out (InsertSound cuts the recording's last knock).
++    private func playDisc() {
++        withAnimation(.easeOut(duration: 0.4)) { phase = .lifted } completion: {
++            withAnimation(.easeInOut(duration: 0.85)) { phase = .flying } completion: {
++                InsertSound.play(disc: true)
++                clicks += 1
++                withAnimation(.easeInOut(duration: 1.0)) { phase = .inside } completion: {
++                    withAnimation(.easeIn(duration: 0.5).delay(0.15)) { blackout = true } completion: { start() }
 +                }
 +            }
 +        }
@@ -1878,10 +1894,10 @@ index 0000000..055f5bd
 +}
 diff --git a/frontend-ios/Sources/ShellUI/InsertSound.swift b/frontend-ios/Sources/ShellUI/InsertSound.swift
 new file mode 100644
-index 0000000..0001809
+index 0000000..3a0b9ce
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/InsertSound.swift
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,129 @@
 +import AVFoundation
 +import Foundation
 +
@@ -1918,7 +1934,16 @@ index 0000000..0001809
 +        prepare(disc: wantsDisc)
 +        let player = wantsDisc ? disc : card
 +        player?.currentTime = 0
++        player?.volume = wantsDisc ? 1.0 : 0.9
 +        player?.play()
++        // The disc's recording ends on a hard knock: it fades out over its last half second instead
++        if wantsDisc, let player, player.duration > 0.8 {
++            let at = player.duration - 0.55
++            Task { @MainActor in
++                try? await Task.sleep(for: .seconds(at))
++                if player.isPlaying { player.setVolume(0, fadeDuration: 0.4) }
++            }
++        }
 +    }
 +
 +    /// A disc into a slot-loading drive, about 1.2 s at `rate`: the disc's edge brushing the felt of the slot, the rollers taking it
