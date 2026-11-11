@@ -5517,7 +5517,7 @@ index 4533d0e..3c60309 100644
                  onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                  onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
 diff --git a/frontend-ios/Sources/ShellUI/ShellStyle.swift b/frontend-ios/Sources/ShellUI/ShellStyle.swift
-index 99ecd78..05d768a 100644
+index 99ecd78..97ac6f6 100644
 --- a/frontend-ios/Sources/ShellUI/ShellStyle.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellStyle.swift
 @@ -232,9 +232,17 @@ struct ArtView: View {
@@ -5539,7 +5539,7 @@ index 99ecd78..05d768a 100644
                  Image(decorative: backdrop ? banner.thumbnail : banner.image, scale: 1)
                      .resizable().interpolation(backdrop ? .medium : .high).scaledToFill()
              } else if let icon = game.icon {
-@@ -429,6 +437,34 @@ struct ButtonGlyph: View {
+@@ -429,14 +437,42 @@ struct ButtonGlyph: View {
      }
  }
  
@@ -5547,7 +5547,7 @@ index 99ecd78..05d768a 100644
 +struct HintBar<Content: View>: View {
 +    @ViewBuilder let content: Content
 +    var body: some View {
-+        HStack(spacing: 18) { content }
++        HStack(spacing: 14) { content }
 +            .padding(.horizontal, 16).frame(minHeight: 36)
 +            .background { Capsule().fill(.ultraThinMaterial).overlay(Capsule().fill(.black.opacity(0.5))) }
 +            .environment(\.colorScheme, .dark)
@@ -5562,7 +5562,7 @@ index 99ecd78..05d768a 100644
 +    var body: some View {
 +        HStack(spacing: 8) {
 +            HStack(spacing: 4) { cap("LB"); cap("RB") }
-+            Text(label).shellText(13, .medium, relativeTo: .footnote)
++            Text(label).shellText(13, .medium, relativeTo: .footnote).lineLimit(1).fixedSize()
 +        }.foregroundStyle(.white.opacity(0.75))
 +    }
 +    private func cap(_ text: String) -> some View {
@@ -5574,11 +5574,12 @@ index 99ecd78..05d768a 100644
  struct GlyphHint: View {
      let role: GlyphRole
      let label: String
-@@ -436,7 +472,7 @@ struct GlyphHint: View {
+     var body: some View {
          HStack(spacing: 8) {
              ButtonGlyph(role: role)
-             Text(label).shellText(13, .medium, relativeTo: .footnote)
+-            Text(label).shellText(13, .medium, relativeTo: .footnote)
 -        }.foregroundStyle(.white.opacity(0.6))
++            Text(label).shellText(13, .medium, relativeTo: .footnote).lineLimit(1).fixedSize()
 +        }.foregroundStyle(.white.opacity(0.75))
      }
  }
