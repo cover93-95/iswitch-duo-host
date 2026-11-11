@@ -1036,10 +1036,10 @@ index 8651917..598d4f3 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..6c4fa25
+index 0000000..2dfa84a
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,515 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1075,10 +1075,11 @@ index 0000000..6c4fa25
 +            let width = height * CoverFlowView.boxRatio
 +            let size = geometry.size
 +            // Where the card lies in the open tray (see CaseTray), on the screen: the tray is the right half of the open case.
-+            let card = CGSize(width: width * CaseTray.cardShare, height: width * CaseTray.cardShare * CaseTray.cardRatio)
++            let disc = game.isDisc
++            let card = CGSize(width: width * CaseTray.share(disc), height: width * CaseTray.share(disc) * CaseTray.ratio(disc))
 +            let caseCentre = CGPoint(x: size.width / 2, y: size.height / 2 - height * 0.03)
 +            let inTray = CGPoint(x: caseCentre.x + width / 2,
-+                                 y: caseCentre.y + height / 2 - height * CaseTray.bottomShare - card.height * 0.55)
++                                 y: caseCentre.y + height / 2 - height * CaseTray.bottom(disc, width: width, height: height) - card.height * 0.55)
 +            // The console's slot, at the top right: the card arrives under it at `scale` and goes in upward.
 +            let scale: CGFloat = 0.55
 +            let slot = CGPoint(x: size.width - 40 - card.width * scale * 0.6, y: 92)
@@ -1189,7 +1190,7 @@ index 0000000..6c4fa25
 +    }
 +
 +    private func present() {
-+        if playable { InsertSound.prepare() }
++        if playable { InsertSound.prepare(disc: game.isDisc) }
 +        if reduceMotion { shown = true; opened = true; return }
 +        withAnimation(.spring(duration: 0.6, bounce: 0.18)) { shown = true }
 +        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { opened = true }
@@ -1211,14 +1212,14 @@ index 0000000..6c4fa25
 +        guard phase == .idle else { return }
 +        guard playable else { insert(); return }
 +        if reduceMotion {
-+            InsertSound.play(); clicks += 1
++            InsertSound.play(disc: game.isDisc); clicks += 1
 +            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { insert() }
 +            return
 +        }
 +        withAnimation(.easeOut(duration: 0.18)) { phase = .lifted } completion: {
 +            withAnimation(.easeInOut(duration: 0.5)) { phase = .flying } completion: {
 +                withAnimation(.easeIn(duration: 0.14)) { phase = .inside } completion: {
-+                    InsertSound.play()
++                    InsertSound.play(disc: game.isDisc)
 +                    clicks += 1
 +                    // The slot flares, then the screen fades to black and the game starts in the dark.
 +                    withAnimation(.easeIn(duration: 0.6).delay(0.3)) { blackout = true } completion: { start() }
@@ -1234,15 +1235,30 @@ index 0000000..6c4fa25
 +    let lit: Bool
 +    /// The card is in: a brighter, wider light around the slot.
 +    var flare = false
++    @Environment(\.caseStyle) private var style
 +    var body: some View {
-+        let glow = Color(red: 0.35, green: 0.65, blue: 1.0)
++        let glow = style.disc ? Color(red: 0.55, green: 0.75, blue: 1.0) : Color(red: 0.35, green: 0.65, blue: 1.0)
++        // A disc goes into a slot-loading drive: a longer, thinner slit in a flat bezel, the disc mark beside it.
++        let rim = style.disc ? CGSize(width: width * 1.25 + 46, height: 18) : CGSize(width: width + 18, height: 22)
++        let slit = style.disc ? CGSize(width: width * 1.12, height: 3) : CGSize(width: width, height: 6)
 +        ZStack {
-+            Capsule().fill(LinearGradient(colors: [Color(white: 0.28), Color(white: 0.12)], startPoint: .top, endPoint: .bottom))
-+                .frame(width: width + 18, height: 22)
++            Capsule().fill(LinearGradient(colors: style.disc ? [Color(white: 0.22), Color(white: 0.08)] : [Color(white: 0.28), Color(white: 0.12)],
++                                          startPoint: .top, endPoint: .bottom))
++                .frame(width: rim.width, height: rim.height)
 +                .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
-+            Capsule().fill(flare ? glow.mix(with: .white, by: 0.55) : .black).frame(width: width, height: 6)
++            Capsule().fill(flare ? glow.mix(with: .white, by: 0.55) : .black).frame(width: slit.width, height: slit.height)
 +                .shadow(color: lit ? glow : .clear, radius: lit ? (flare ? 14 : 8) : 0)
 +                .shadow(color: flare ? glow.opacity(0.9) : .clear, radius: flare ? 28 : 0)
++            if style.disc {
++                HStack {
++                    Image(systemName: "opticaldisc").font(.system(size: 10, weight: .semibold))
++                    Spacer()
++                    Image(systemName: "eject.fill").font(.system(size: 8, weight: .semibold))
++                }
++                .foregroundStyle(.white.opacity(lit ? 0.75 : 0.4))
++                .padding(.horizontal, 9)
++                .frame(width: rim.width, height: rim.height)
++            }
 +        }
 +        .shadow(color: .black.opacity(0.5), radius: 8, y: 3)
 +        .animation(.easeOut(duration: 0.2), value: lit)
@@ -1425,17 +1441,23 @@ index 0000000..6c4fa25
 +    static let cardShare: CGFloat = 0.3
 +    static let cardRatio: CGFloat = 1.42
 +    static let bottomShare: CGFloat = 0.09
++    /// A disc fills most of its tray, in the middle, as in a DVD case.
++    static func share(_ disc: Bool) -> CGFloat { disc ? 0.8 : cardShare }
++    static func ratio(_ disc: Bool) -> CGFloat { disc ? 1 : cardRatio }
++    static func bottom(_ disc: Bool, width: CGFloat, height: CGFloat) -> CGFloat {
++        disc ? max(0.04, 0.5 - 0.55 * width * 0.8 / max(height, 1)) : bottomShare
++    }
 +    @Environment(\.caseStyle) private var style
 +    var body: some View {
 +        CasePlastic(width: width, height: height) {
-+            let cardWidth = width * Self.cardShare
-+            let cardHeight = cardWidth * Self.cardRatio
++            let cardWidth = width * Self.share(style.disc)
++            let cardHeight = cardWidth * Self.ratio(style.disc)
 +            VStack(spacing: 0) {
 +                Spacer(minLength: 0)
 +                ZStack {
 +                    // The slot: a dark recess a little larger than the card, or the disc's round seat with its hub.
 +                    if style.disc {
-+                        Circle().fill(style.dark.opacity(0.95)).frame(width: cardWidth * 1.12, height: cardWidth * 1.12)
++                        Circle().fill(style.dark.opacity(0.95)).frame(width: cardWidth * 1.06, height: cardWidth * 1.06)
 +                            .overlay(Circle().stroke(.black.opacity(0.35), lineWidth: 2))
 +                    } else {
 +                        GameCardShape(notch: cardWidth * 0.14)
@@ -1451,7 +1473,7 @@ index 0000000..6c4fa25
 +                        .foregroundStyle(style.dark.opacity(0.9))
 +                        .offset(x: width * 0.12)
 +                }
-+                .padding(.bottom, height * Self.bottomShare)
++                .padding(.bottom, height * Self.bottom(style.disc, width: width, height: height))
 +            }
 +            .frame(width: width, height: height)
 +        }
@@ -1836,30 +1858,89 @@ index 0000000..055f5bd
 +}
 diff --git a/frontend-ios/Sources/ShellUI/InsertSound.swift b/frontend-ios/Sources/ShellUI/InsertSound.swift
 new file mode 100644
-index 0000000..01d2303
+index 0000000..0001809
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/InsertSound.swift
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,120 @@
 +import AVFoundation
 +import Foundation
 +
-+/// The click of a game card going into the console: a short scrape, then the latch. Made here as samples (no sound file), so the
-+/// app carries no recording. Played through the default session, so the ring/silent switch mutes it like any app sound.
++/// The click of a game card going into the console (a short scrape, then the latch), or a disc swallowed by a slot-loading drive.
++/// Made here as samples (no sound file), so the app carries no recording. Played in the playback session, mixed with other audio,
++/// so it is heard with the ring/silent switch on, as a console's sounds are (the player asked for it), at the device volume.
 +@MainActor enum InsertSound {
-+    private static var player: AVAudioPlayer?
++    private static var card: AVAudioPlayer?
++    private static var disc: AVAudioPlayer?
 +
-+    /// Ready to play at once, so the click lands with the animation.
-+    static func prepare() {
-+        guard player == nil else { return }
-+        player = try? AVAudioPlayer(data: wav(samples(rate: 44_100)))
-+        player?.volume = 0.9
-+        player?.prepareToPlay()
++    /// Ready to play at once, so the sound lands with the animation.
++    static func prepare(disc wantsDisc: Bool = false) {
++        #if os(iOS)
++        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
++        try? AVAudioSession.sharedInstance().setActive(true)
++        #endif
++        if wantsDisc {
++            guard disc == nil else { return }
++            // A recording the IPA carries beside the app (disc-insert.wav / .m4a / .mp3 / .caf, never in the repository) wins over
++            // the made-up one
++            let recorded = ["wav", "m4a", "mp3", "caf"].lazy.compactMap { Bundle.main.url(forResource: "disc-insert", withExtension: $0) }.first
++            disc = recorded.flatMap { try? AVAudioPlayer(contentsOf: $0) } ?? (try? AVAudioPlayer(data: wav(discSamples(rate: 44_100))))
++            disc?.volume = 1.0
++            disc?.prepareToPlay()
++        } else {
++            guard card == nil else { return }
++            card = try? AVAudioPlayer(data: wav(samples(rate: 44_100)))
++            card?.volume = 0.9
++            card?.prepareToPlay()
++        }
 +    }
 +
-+    static func play() {
-+        prepare()
++    static func play(disc wantsDisc: Bool = false) {
++        prepare(disc: wantsDisc)
++        let player = wantsDisc ? disc : card
 +        player?.currentTime = 0
 +        player?.play()
++    }
++
++    /// A disc into a slot-loading drive, about 1.2 s at `rate`: the disc's edge brushing the felt of the slot, the rollers taking it
++    /// in with the motor's rising hum, the soft thunk of the disc on the spindle, then the spin-up whine fading out.
++    static func discSamples(rate: Int) -> [Float] {
++        let count = Int(Double(rate) * 1.25)
++        var out = [Float](repeating: 0, count: count)
++        var seed: UInt32 = 0x2545_F491
++        func noise() -> Float {
++            seed = seed &* 1_664_525 &+ 1_013_904_223
++            return Float(Int32(bitPattern: seed)) / Float(Int32.max)
++        }
++        var low: Float = 0, phaseMotor = 0.0, phaseWhine = 0.0
++        for i in 0..<count {
++            let t = Double(i) / Double(rate)
++            var v: Float = 0
++            // felt brush as the edge goes in (0-0.18 s), low-passed noise
++            low += (noise() - low) * 0.08
++            if t < 0.18 { v += low * Float(min(1, t / 0.04)) * Float(1 - t / 0.18) * 0.55 }
++            // rollers and motor pulling the disc in (0.12-0.72 s): a hum gliding 95 -> 150 Hz with roller rumble
++            if t >= 0.12 && t < 0.72 {
++                let u = (t - 0.12) / 0.6
++                phaseMotor += 2 * .pi * (95 + 55 * u) / Double(rate)
++                let env = Float(min(1, u * 6) * min(1, (1 - u) * 5))
++                v += env * (0.32 * Float(sin(phaseMotor)) + 0.12 * Float(sin(phaseMotor * 2)) + 0.18 * low)
++            }
++            // the disc seated on the spindle (0.72 s): a soft low thunk and a small click
++            if t >= 0.72 {
++                let u = t - 0.72
++                v += Float(exp(-u / 0.03)) * 0.55 * Float(sin(2 * .pi * 70 * u))
++                v += Float(exp(-u / 0.002)) * 0.25 * noise()
++            }
++            // spin-up (0.78-1.25 s): a whine rising 260 -> 900 Hz, quiet, fading out
++            if t >= 0.78 {
++                let u = (t - 0.78) / 0.47
++                phaseWhine += 2 * .pi * (260 + 640 * u * u) / Double(rate)
++                let env = Float(min(1, u * 4) * (1 - u))
++                v += env * (0.10 * Float(sin(phaseWhine)) + 0.05 * Float(sin(phaseWhine * 1.5)) + 0.04 * low)
++            }
++            out[i] = max(-1, min(1, v))
++        }
++        return out
 +    }
 +
 +    /// The sound, -1...1 at `rate`: 50 ms of soft scrape rising, a sharp click, and a duller latch 20 ms later.
@@ -2245,7 +2326,7 @@ index eb5e2ef..0eabd70 100644
      }
  }
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 2a2db87..fa5b1c8 100644
+index 2a2db87..6c94c86 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -1,6 +1,126 @@
@@ -2927,76 +3008,42 @@ index 2a2db87..fa5b1c8 100644
      "Opens the button mapping": {
        "localizations": {
          "de": {
-@@ -4112,47 +4680,127 @@
+@@ -4157,31 +4725,111 @@
+         }
+       }
+     },
+-    "Played %@": {
++    "Play time and launches are counted by this app, on this device.": {
+       "localizations": {
          "en": {
            "stringUnit": {
              "state": "translated",
--            "value": "Pipeline prebuild"
-+            "value": "Pipeline prebuild"
-+          }
-+        },
-+        "fr": {
-+          "stringUnit": {
-+            "state": "translated",
-+            "value": "Précompilation des pipelines"
-+          }
-+        },
-+        "it": {
-+          "stringUnit": {
-+            "state": "translated",
-+            "value": "Precompilazione pipeline"
-+          }
-+        },
-+        "sv": {
-+          "stringUnit": {
-+            "state": "translated",
-+            "value": "Förbygg pipelines"
-+          }
-+        },
-+        "zh-Hans": {
-+          "stringUnit": {
-+            "state": "translated",
-+            "value": "预先构建管线"
-+          }
-+        }
-+      }
-+    },
-+    "Play": {
-+      "localizations": {
-+        "en": {
-+          "stringUnit": {
-+            "state": "translated",
-+            "value": "Play"
-+          }
-+        },
-+        "zh-Hans": {
-+          "stringUnit": {
-+            "state": "translated",
-+            "value": "开始"
-+          }
-+        }
-+      }
-+    },
-+    "Play time and launches are counted by this app, on this device.": {
-+      "localizations": {
-+        "en": {
-+          "stringUnit": {
-+            "state": "translated",
+-            "value": "Played %@"
 +            "value": "Play time and launches are counted by this app, on this device."
-+          }
-+        },
+           }
+         },
+-        "zh-Hans": {
 +        "fr": {
-+          "stringUnit": {
-+            "state": "translated",
+           "stringUnit": {
+             "state": "translated",
+-            "value": "%@ 玩过"
 +            "value": "Le temps de jeu et les lancements sont comptés par cette app, sur cet appareil."
-+          }
+           }
+-        }
+-      }
+-    },
+-    "Played today": {
+-      "localizations": {
+-        "en": {
 +        },
 +        "de": {
-+          "stringUnit": {
-+            "state": "translated",
+           "stringUnit": {
+             "state": "translated",
+-            "value": "Played today"
 +            "value": "Spielzeit und Starts werden von dieser App auf diesem Gerät gezählt."
-+          }
-+        },
+           }
+         },
+-        "zh-Hans": {
 +        "it": {
 +          "stringUnit": {
 +            "state": "translated",
@@ -3023,57 +3070,68 @@ index 2a2db87..fa5b1c8 100644
 +          "stringUnit": {
 +            "state": "translated",
 +            "value": "Played"
-           }
-         },
-         "fr": {
-           "stringUnit": {
-             "state": "translated",
--            "value": "Précompilation des pipelines"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
 +            "value": "Temps de jeu"
-           }
-         },
--        "it": {
++          }
++        },
 +        "de": {
-           "stringUnit": {
-             "state": "translated",
--            "value": "Precompilazione pipeline"
++          "stringUnit": {
++            "state": "translated",
 +            "value": "Gespielt"
-           }
-         },
--        "sv": {
++          }
++        },
 +        "it": {
-           "stringUnit": {
-             "state": "translated",
--            "value": "Förbygg pipelines"
++          "stringUnit": {
++            "state": "translated",
 +            "value": "Tempo di gioco"
-           }
-         },
--        "zh-Hans": {
--          "stringUnit": {
--            "state": "translated",
--            "value": "预先构建管线"
--          }
--        }
--      }
--    },
--    "Play": {
--      "localizations": {
--        "en": {
++          }
++        },
 +        "sv": {
-           "stringUnit": {
-             "state": "translated",
--            "value": "Play"
++          "stringUnit": {
++            "state": "translated",
 +            "value": "Speltid"
-           }
-         },
-         "zh-Hans": {
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游戏时长"
++          }
++        }
++      }
++    },
++    "Played %@": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Played %@"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "%@ 玩过"
++          }
++        }
++      }
++    },
++    "Played today": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Played today"
++          }
++        },
++        "zh-Hans": {
            "stringUnit": {
              "state": "translated",
--            "value": "开始"
-+            "value": "游戏时长"
-           }
-         }
-       }
+             "value": "今天玩过"
 @@ -5417,6 +6065,46 @@
          }
        }
@@ -3168,7 +3226,7 @@ index 2a2db87..fa5b1c8 100644
      "Your games": {
        "localizations": {
          "en": {
-@@ -5936,6 +6664,206 @@
+@@ -5936,6 +6664,246 @@
            }
          }
        }
@@ -3372,6 +3430,46 @@ index 2a2db87..fa5b1c8 100644
 +          }
 +        }
 +      }
++    },
++    "The game's page did not load.": {
++      "localizations": {
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Die Seite des Spiels wurde nicht geladen."
++          }
++        },
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "The game's page did not load."
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "La page du jeu ne s'est pas chargée."
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "La pagina del gioco non si è caricata."
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spelets sida laddades inte."
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游戏页面未能加载。"
++          }
++        }
++      }
      }
    },
    "version": "1.0"
@@ -3512,10 +3610,10 @@ index 4533d0e..167f4bd 100644
      public var device: InputDevice
 diff --git a/frontend-ios/Sources/ShellUI/WebGameView.swift b/frontend-ios/Sources/ShellUI/WebGameView.swift
 new file mode 100644
-index 0000000..9c58682
+index 0000000..9efeaf2
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/WebGameView.swift
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,153 @@
 +import SwiftUI
 +import WebKit
 +
@@ -3527,14 +3625,24 @@ index 0000000..9c58682
 +    let game: GameTile
 +    let close: () -> Void
 +    @State private var loading = true
++    /// Why the page did not load (no network, the site down), shown in place of a black screen.
++    @State private var failure: String?
 +
 +    var body: some View {
 +        ZStack(alignment: .topLeading) {
 +            Color.black.ignoresSafeArea()
 +            if let url = game.webURL {
-+                WebGameSurface(url: url, loading: $loading)
++                WebGameSurface(url: url, loading: $loading, failure: $failure)
 +                    .ignoresSafeArea()
 +                    .accessibilityLabel(game.title)
++            }
++            if let failure {
++                VStack(spacing: 10) {
++                    Image(systemName: "wifi.exclamationmark").font(.system(size: 28)).foregroundStyle(.white.opacity(0.8))
++                    Text(ShellStrings.text("The game's page did not load.")).shellText(16, .semibold, relativeTo: .headline).foregroundStyle(.white)
++                    Text(failure).shellText(12, .regular, relativeTo: .caption).foregroundStyle(.white.opacity(0.6)).multilineTextAlignment(.center)
++                }
++                .padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).allowsHitTesting(false)
 +            }
 +            if loading {
 +                VStack(spacing: 14) {
@@ -3580,7 +3688,8 @@ index 0000000..9c58682
 +final class WebGameCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
 +    let home: URL
 +    var loading: Binding<Bool>
-+    init(home: URL, loading: Binding<Bool>) { self.home = home; self.loading = loading }
++    var failure: Binding<String?>
++    init(home: URL, loading: Binding<Bool>, failure: Binding<String?>) { self.home = home; self.loading = loading; self.failure = failure }
 +
 +    func load(into web: WKWebView) {
 +        let request = URLRequest(url: home)
@@ -3605,9 +3714,14 @@ index 0000000..9c58682
 +    /// A pop-up (window.open, a link to a new window) opens nothing.
 +    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction,
 +                 windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading.wrappedValue = false }
-+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { loading.wrappedValue = false }
-+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { loading.wrappedValue = false }
++    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading.wrappedValue = false; failure.wrappedValue = nil }
++    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
++    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
++    private func fail(_ error: Error) {
++        loading.wrappedValue = false
++        if (error as NSError).code == NSURLErrorCancelled { return }   // a redirect this coordinator refused, or a new load
++        failure.wrappedValue = error.localizedDescription
++    }
 +
 +    static func makeWebView(coordinator: WebGameCoordinator) -> WKWebView {
 +        let config = WKWebViewConfiguration()
@@ -3637,7 +3751,8 @@ index 0000000..9c58682
 +struct WebGameSurface: UIViewRepresentable {
 +    let url: URL
 +    @Binding var loading: Bool
-+    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, loading: $loading) }
++    @Binding var failure: String?
++    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, loading: $loading, failure: $failure) }
 +    func makeUIView(context: Context) -> WKWebView { WebGameCoordinator.makeWebView(coordinator: context.coordinator) }
 +    func updateUIView(_ view: WKWebView, context: Context) {}
 +    static func dismantleUIView(_ view: WKWebView, coordinator: WebGameCoordinator) { view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
@@ -3646,7 +3761,8 @@ index 0000000..9c58682
 +struct WebGameSurface: NSViewRepresentable {
 +    let url: URL
 +    @Binding var loading: Bool
-+    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, loading: $loading) }
++    @Binding var failure: String?
++    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, loading: $loading, failure: $failure) }
 +    func makeNSView(context: Context) -> WKWebView { WebGameCoordinator.makeWebView(coordinator: context.coordinator) }
 +    func updateNSView(_ view: WKWebView, context: Context) {}
 +}
