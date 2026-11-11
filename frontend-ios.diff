@@ -51,7 +51,7 @@ index 9b4bf13..52b6b6c 100644
          let key = "\(id).\(lettering)"
          if let art = cache[key] { return art }
 diff --git a/frontend-ios/Sources/ShellDemo/SampleData.swift b/frontend-ios/Sources/ShellDemo/SampleData.swift
-index ac4358f..4577d5c 100644
+index ac4358f..5fa3837 100644
 --- a/frontend-ios/Sources/ShellDemo/SampleData.swift
 +++ b/frontend-ios/Sources/ShellDemo/SampleData.swift
 @@ -27,7 +27,31 @@ func demoText(_ key: String.LocalizationValue) -> String {
@@ -87,7 +87,7 @@ index ac4358f..4577d5c 100644
              GameDetail(game: tile, sections: [
                  SettingSection(id: "game", title: demoText("Game"), rows: [
                      SettingRow(id: "DM_OPERATION_MODE", label: demoText("Play mode"), note: demoText("The game's display and performance profile."), kind: .choice([SettingOption("handheld", demoText("Handheld")), SettingOption("docked", demoText("Docked"))]), value: "handheld"),
-@@ -47,6 +71,22 @@ func demoText(_ key: String.LocalizationValue) -> String {
+@@ -47,6 +71,27 @@ func demoText(_ key: String.LocalizationValue) -> String {
                         cloudFromShell: tile.id == "orbit")
          }
      }
@@ -96,7 +96,12 @@ index ac4358f..4577d5c 100644
 +        var tile = tile
 +        switch tile.id {
 +        case "orbit":
-+            tile.stats = PlayStats(launches: 9, seconds: 3 * 3600 + 25 * 60, lastPlayed: Date())
++            // Sessions over the last weeks, for the Your play tab.
++            let day: TimeInterval = 86_400
++            let sessions = [(41, 55), (33, 70), (26, 40), (19, 25), (12, 15), (8, 20), (3, 30), (0, 50)].map {
++                PlaySession(start: Date().addingTimeInterval(-Double($0.0) * day), seconds: Double($0.1) * 60) }
++            tile.stats = PlayStats(launches: 9, seconds: 3 * 3600 + 25 * 60, lastPlayed: Date(), sessions: sessions, status: .playing,
++                                   favourite: true)
 +            tile.backdrop = tile.banner ?? tile.icon   // the demo has no world picture: its own art stands in, sharp
 +            // --still: no particles, for the UI tests that tap a lot (an endless animation keeps the app from going idle between taps)
 +            if !ProcessInfo.processInfo.arguments.contains("--still") { tile.ambience = .sparkles }
@@ -256,12 +261,37 @@ index 17a15dd..f26980e 100644
  }
  
  /// Where a game's data was found.
+diff --git a/frontend-ios/Sources/ShellHost/LibraryOrder.swift b/frontend-ios/Sources/ShellHost/LibraryOrder.swift
+index b182de3..95d91bf 100644
+--- a/frontend-ios/Sources/ShellHost/LibraryOrder.swift
++++ b/frontend-ios/Sources/ShellHost/LibraryOrder.swift
+@@ -11,7 +11,7 @@ public struct LastPlayedStore {
+     public func record(_ date: Date) { defaults.set(date, forKey: Self.key) }
+ }
+ 
+-/// The library's order: recently played first (the latest first), then playable, then needs game data, then needs an
++/// The library's order: favourites first, then recently played (the latest first), then playable, then needs game data, then needs an
+ /// app update, then broken. Alphabetical by title within each group. Applied when the library loads or reloads, never
+ /// on a single game's change of state, so nothing moves under the player's finger.
+ public enum LibraryOrder {
+@@ -26,8 +26,10 @@ public enum LibraryOrder {
+     }
+ 
+     /// The ids in library order.
+-    public static func ids(of games: [GameTile], lastPlayed: [String: Date]) -> [String] {
++    public static func ids(of games: [GameTile], lastPlayed: [String: Date], favourites: Set<String> = []) -> [String] {
+         games.sorted { a, b in
++            let (fa, fb) = (favourites.contains(a.id), favourites.contains(b.id))
++            if fa != fb { return fa }
+             let (da, db) = (lastPlayed[a.id], lastPlayed[b.id])
+             let (ga, gb) = (group(a, lastPlayed: da), group(b, lastPlayed: db))
+             if ga != gb { return ga < gb }
 diff --git a/frontend-ios/Sources/ShellHost/PlayStatsStore.swift b/frontend-ios/Sources/ShellHost/PlayStatsStore.swift
 new file mode 100644
-index 0000000..4ac066c
+index 0000000..88615ba
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellHost/PlayStatsStore.swift
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,88 @@
 +import Foundation
 +import ShellUI
 +
@@ -277,6 +307,11 @@ index 0000000..4ac066c
 +    public static let secondsKey = "shell.playSeconds"
 +    public static let startKey = "shell.sessionStart"
 +    public static let aliveKey = "shell.sessionAlive"
++    /// The closed sessions, [start (seconds since 1970), length] each, the latest `kept`.
++    public static let sessionsKey = "shell.sessions"
++    public static let statusKey = "shell.status"
++    public static let favouriteKey = "shell.favourite"
++    public static let kept = 1000
 +    public static let longest: TimeInterval = 12 * 3600
 +    private let defaults: UserDefaults
 +    public init(defaults: UserDefaults) { self.defaults = defaults }
@@ -284,6 +319,30 @@ index 0000000..4ac066c
 +    public var launches: Int { defaults.integer(forKey: Self.launchesKey) }
 +    /// The closed sessions together.
 +    public var seconds: TimeInterval { defaults.double(forKey: Self.secondsKey) }
++    public var sessions: [PlaySession] {
++        ((defaults.array(forKey: Self.sessionsKey) as? [[Double]]) ?? []).compactMap { pair in
++            pair.count == 2 ? PlaySession(start: Date(timeIntervalSince1970: pair[0]), seconds: pair[1]) : nil
++        }
++    }
++    public var status: PlayStatus? { defaults.string(forKey: Self.statusKey).flatMap(PlayStatus.init(rawValue:)) }
++    public func setStatus(_ status: PlayStatus?) { defaults.set(status?.rawValue, forKey: Self.statusKey) }
++    public var favourite: Bool { defaults.bool(forKey: Self.favouriteKey) }
++    public func setFavourite(_ on: Bool) { defaults.set(on, forKey: Self.favouriteKey) }
++
++    private func keep(_ start: Date, _ length: TimeInterval) {
++        var all = (defaults.array(forKey: Self.sessionsKey) as? [[Double]]) ?? []
++        all.append([start.timeIntervalSince1970, length])
++        defaults.set(Array(all.suffix(Self.kept)), forKey: Self.sessionsKey)
++    }
++
++    /// A session seen whole (a browser game, whose page the library sees close): one launch and its time.
++    public func record(start: Date, end: Date) {
++        let length = min(Self.longest, max(0, end.timeIntervalSince(start)))
++        defaults.set(launches + 1, forKey: Self.launchesKey)
++        defaults.set(seconds + length, forKey: Self.secondsKey)
++        keep(start, length)
++    }
++
 +    /// When the session not closed yet began.
 +    public var openSession: Date? { defaults.object(forKey: Self.startKey) as? Date }
 +
@@ -316,12 +375,13 @@ index 0000000..4ac066c
 +        let marks = [defaults.object(forKey: Self.aliveKey) as? Date, lastSign].compactMap { $0 }.filter { $0 >= start }
 +        let length = min(Self.longest, max(0, (marks.max() ?? start).timeIntervalSince(start)))
 +        defaults.set(seconds + length, forKey: Self.secondsKey)
++        keep(start, length)
 +        defaults.removeObject(forKey: Self.startKey)
 +        defaults.removeObject(forKey: Self.aliveKey)
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellHost/ShellHostModel.swift b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
-index 02898cb..8a1ae31 100644
+index 02898cb..887b8d5 100644
 --- a/frontend-ios/Sources/ShellHost/ShellHostModel.swift
 +++ b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
 @@ -19,11 +19,13 @@ public struct ShellHostConfig: Sendable {
@@ -353,16 +413,17 @@ index 02898cb..8a1ae31 100644
      }
  
      @MainActor public static func systemOpen(_ url: URL) {
-@@ -50,6 +59,8 @@ public struct ShellHostConfig: Sendable {
+@@ -50,6 +59,9 @@ public struct ShellHostConfig: Sendable {
  /// `GameDetail` values, and acts on `ShellActions`. `ShellUI` stays view-only, every file is read here.
  @MainActor @Observable public final class ShellHostModel {
      public private(set) var details: [GameDetail] = []
 +    /// The browser games, after the Switch games in `details`: read once per reload, never touched by the engine paths.
 +    private var webDetails: [GameDetail] = []
++    @ObservationIgnored private var webEntries: [WebGameEntry] = []
      public private(set) var entries: [CatalogueEntry] = []
      public private(set) var controllers: [ControllerInfo] = []
      public private(set) var input: ShellInput?
-@@ -79,6 +90,10 @@ public struct ShellHostConfig: Sendable {
+@@ -79,6 +91,10 @@ public struct ShellHostConfig: Sendable {
      @ObservationIgnored private var shellMatches: [String: URL] = [:]
      @ObservationIgnored private var shellScan: Task<Void, Never>?
      @ObservationIgnored nonisolated(unsafe) private var defaultsObserver: (any NSObjectProtocol)?
@@ -373,7 +434,7 @@ index 02898cb..8a1ae31 100644
  
      public init(config: ShellHostConfig, launcher: any GameLauncher = StubGameLauncher(), picker: any FolderPicker = NoFolderPicker(),
                  shellSettings: ShellSettingsStore = .current) {
-@@ -108,7 +123,7 @@ public struct ShellHostConfig: Sendable {
+@@ -108,7 +124,7 @@ public struct ShellHostConfig: Sendable {
          globalPadMap = shellSettings.padMap
          shellChoices = Self.choices(of: shellSettings)
          startShellScan()
@@ -382,7 +443,7 @@ index 02898cb..8a1ae31 100644
      }
  
      /// Looks for every game's image by identity in the shell data folder. The drive is read off the main actor: until the scan is
-@@ -137,7 +152,7 @@ public struct ShellHostConfig: Sendable {
+@@ -137,7 +153,7 @@ public struct ShellHostConfig: Sendable {
              }.value
              guard let self, !Task.isCancelled, self.scannedShellFolder == folder.path else { return }
              self.shellMatches = found
@@ -391,7 +452,7 @@ index 02898cb..8a1ae31 100644
          }
      }
  
-@@ -154,16 +169,30 @@ public struct ShellHostConfig: Sendable {
+@@ -154,20 +170,64 @@ public struct ShellHostConfig: Sendable {
      /// a change to one game updates it in place.
      public func reload() {
          let scanned = GameCatalogue.scan(root: config.gamesRoot).filter { !isDeleted($0) }
@@ -404,11 +465,15 @@ index 02898cb..8a1ae31 100644
 +        }
          let built = scanned.map(detail(for:))
          let order = LibraryOrder.ids(of: built.map(\.game), lastPlayed: Dictionary(uniqueKeysWithValues: scanned.compactMap { e in
-             lastPlayed(e.id).map { (e.id, $0) } }))
+-            lastPlayed(e.id).map { (e.id, $0) } }))
++            lastPlayed(e.id).map { (e.id, $0) } }), favourites: Set(scanned.map(\.id).filter { PlayStatsStore(defaults: config.defaults($0)).favourite }))
          let position = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
          entries = scanned.sorted { position[$0.id] ?? 0 < position[$1.id] ?? 0 }
 -        details = built.sorted { position[$0.id] ?? 0 < position[$1.id] ?? 0 }
-+        webDetails = WebGameCatalogue.scan(root: config.webGamesRoot).map(webDetail(for:))
++        // Browser games: favourites first, otherwise the catalogue's order.
++        let web = WebGameCatalogue.scan(root: config.webGamesRoot)
++        webEntries = web.filter { PlayStatsStore(defaults: config.defaults($0.id)).favourite } + web.filter { !PlayStatsStore(defaults: config.defaults($0.id)).favourite }
++        webDetails = webEntries.map(webDetail(for:))
 +        details = built.sorted { position[$0.id] ?? 0 < position[$1.id] ?? 0 } + webDetails
          startShellScan(force: true)
      }
@@ -418,12 +483,45 @@ index 02898cb..8a1ae31 100644
 +    private var engineLogURL: URL { config.appDataRoot.deletingLastPathComponent().appendingPathComponent("log.txt") }
 +    private func stats(_ id: String) -> PlayStats {
 +        let store = PlayStatsStore(defaults: config.defaults(id))
-+        return PlayStats(launches: store.launches, seconds: store.seconds, lastPlayed: lastPlayed(id))
++        return PlayStats(launches: store.launches, seconds: store.seconds, lastPlayed: lastPlayed(id), sessions: store.sessions,
++                         status: store.status, favourite: store.favourite)
 +    }
  
      private func refresh(_ id: String) {
-         guard let e = entries.firstIndex(where: { $0.id == id }), let d = details.firstIndex(where: { $0.id == id }) else { return }
-@@ -209,6 +238,16 @@ public struct ShellHostConfig: Sendable {
+-        guard let e = entries.firstIndex(where: { $0.id == id }), let d = details.firstIndex(where: { $0.id == id }) else { return }
+-        details[d] = detail(for: entries[e])
++        guard let d = details.firstIndex(where: { $0.id == id }) else { return }
++        if let e = entries.firstIndex(where: { $0.id == id }) { details[d] = detail(for: entries[e]) }
++        else if let w = webEntries.firstIndex(where: { $0.id == id }) {
++            webDetails[w] = webDetail(for: webEntries[w])
++            details[d] = webDetails[w]
++        }
++    }
++
++    /// The player's status for a game, from the info panel (the order of the library does not change until the next load).
++    func setStatus(_ id: String, _ status: PlayStatus?) {
++        PlayStatsStore(defaults: config.defaults(id)).setStatus(status)
++        refresh(id)
++    }
++
++    /// The favourite mark: favourites come first from the next load of the library on.
++    func toggleFavourite(_ id: String) {
++        let store = PlayStatsStore(defaults: config.defaults(id))
++        store.setFavourite(!store.favourite)
++        refresh(id)
++    }
++
++    /// A browser game's page was open from `start` to `end`: a launch, its session, and the last-played day. Under a minute (a page
++    /// opened by mistake) does not count.
++    func webPlayed(_ id: String, start: Date, end: Date) {
++        guard end.timeIntervalSince(start) >= 60 else { return }
++        PlayStatsStore(defaults: config.defaults(id)).record(start: start, end: end)
++        LastPlayedStore(defaults: config.defaults(id)).record(end)
++        refresh(id)
+     }
+ 
+     private func entry(_ id: String) -> CatalogueEntry? { entries.first { $0.id == id } }
+@@ -209,6 +269,16 @@ public struct ShellHostConfig: Sendable {
                                    global: shellData.resolve(), shellMatch: shellMatches[manifest.titleID])
      }
  
@@ -440,7 +538,7 @@ index 02898cb..8a1ae31 100644
      private func image(_ url: URL?) -> Artwork? {
          guard let url else { return nil }
          if let a = artwork[url] { return a }
-@@ -217,13 +256,25 @@ public struct ShellHostConfig: Sendable {
+@@ -217,13 +287,27 @@ public struct ShellHostConfig: Sendable {
          return a
      }
  
@@ -451,6 +549,8 @@ index 02898cb..8a1ae31 100644
 +                            screens: entry.screenURLs, synopsis: entry.synopsis ?? "", platform: entry.platform, webURL: entry.url)
 +        tile.webStart = entry.start
 +        tile.webFocus = entry.focus
++        tile.stats = stats(entry.id)
++        tile.recentlyPlayed = lastPlayed(entry.id).map { ShellFormat.played($0, now: config.now()) }
 +        return GameDetail(game: tile)
 +    }
 +
@@ -467,7 +567,27 @@ index 02898cb..8a1ae31 100644
          guard let profile = entry.profile, entry.problem == nil else {
              return GameDetail(game: tile, dataNote: dataNote(data, found: false))
          }
-@@ -454,12 +505,30 @@ public struct ShellHostConfig: Sendable {
+@@ -280,7 +364,7 @@ public struct ShellHostConfig: Sendable {
+ 
+     /// The closures for `LibraryView`.
+     public var actions: ShellActions {
+-        ShellActions(
++        var actions = ShellActions(
+             onPlay: { [weak self] id in self?.play(id) },
+             onChange: { [weak self] id, setting, value in self?.change(id, setting: setting, value: value) },
+             onPickGameData: { [weak self] id in self?.pickGameData(id) },
+@@ -304,6 +388,10 @@ public struct ShellHostConfig: Sendable {
+             onGlobalPadMapReset: { [weak self] in self?.shellSettings.resetPadMap(); self?.refreshAll() },
+             onButtonTest: { [weak self] open in self?.buttonTest(open) },
+             onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
++        actions.onSetStatus = { [weak self] id, status in self?.setStatus(id, status) }
++        actions.onToggleFavourite = { [weak self] id in self?.toggleFavourite(id) }
++        actions.onWebPlayed = { [weak self] id, start, end in self?.webPlayed(id, start: start, end: end) }
++        return actions
+     }
+ 
+     public func change(_ id: String, setting: String, value: String) {
+@@ -454,12 +542,30 @@ public struct ShellHostConfig: Sendable {
          }
          // Remembered when Play is triggered, even if the launcher then fails (the stub). The order changes at the next load.
          LastPlayedStore(defaults: config.defaults(id)).record(config.now())
@@ -718,7 +838,7 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..8c5f6e0 100644
+index 8651917..bedf1e9 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -16,6 +16,16 @@ struct CoverFlowView: View, Equatable {
@@ -1088,7 +1208,7 @@ index 8651917..8c5f6e0 100644
          .ignoresSafeArea()
          .accessibilityHidden(true)
      }
-@@ -407,3 +572,45 @@ struct ShellSettingsChip: View {
+@@ -407,3 +572,47 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
@@ -1100,6 +1220,8 @@ index 8651917..8c5f6e0 100644
 +    let current: String
 +    let showsHints: Bool
 +    let choose: (String) -> Void
++    /// The segments' identifiers: "platform.<name>", or the info panel's tabs.
++    var idPrefix = "platform."
 +    var body: some View {
 +        HStack(spacing: 8) {
 +            if showsHints { shoulder("L") }
@@ -1115,7 +1237,7 @@ index 8651917..8c5f6e0 100644
 +                    }
 +                    .buttonStyle(.plain)
 +                    .accessibilityAddTraits(on ? .isSelected : [])
-+                    .accessibilityIdentifier("platform.\(name)")
++                    .accessibilityIdentifier(idPrefix + name)
 +                }
 +            }
 +            .padding(4)
@@ -1754,15 +1876,18 @@ index 0000000..a04f3db
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameInfoPanel.swift b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
 new file mode 100644
-index 0000000..93cb0e0
+index 0000000..46d1460
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,241 @@
 +import SwiftUI
 +
-+/// A game's info panel in Cover Flow: it slides in from the right when the centred box is chosen (A or a tap), and holds the
-+/// game's play statistics, its one action (Play, or the way out for a game that cannot start), the open-box view and the game
-+/// settings, then what the game is about: its synopsis and screenshots, each opening full screen. Everything is a focus target for a controller and a button for touch. B, a tap beside it or Close closes it.
++/// A game's info panel in Cover Flow: it slides in from the right when the centred box is chosen (A or a tap). Two tabs, in the
++/// capsule of the platform selector (L and R step through them): Overview holds the game's main figures, its one action (Play,
++/// or the way out for a game that cannot start), the open-box view and the game settings, then what the game is about: its
++/// synopsis and screenshots, each opening full screen. Your play holds the sessions' figures, the hours of the last weeks and
++/// the player's status for the game. The heart beside Close marks a favourite. Everything is a focus target for a controller
++/// and a button for touch. B, a tap beside it or Close closes it.
 +struct GameInfoPanel: View {
 +    let detail: GameDetail
 +    let primary: () -> Void
@@ -1770,17 +1895,33 @@ index 0000000..93cb0e0
 +    let openSettings: () -> Void
 +    let openScreenshot: (Int) -> Void
 +    let close: () -> Void
++    var setStatus: (PlayStatus?) -> Void = { _ in }
++    var toggleFavourite: () -> Void = {}
++    @Binding var tab: Int
++    var showsHints = false
 +    @Environment(\.shellFocus) private var focus
 +    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++
++    private var tabs: [String] { [ShellStrings.text("Overview"), ShellStrings.text("Your play")] }
 +
 +    var body: some View {
 +        let game = detail.game
 +        ScrollViewReader { proxy in
 +        ScrollView {
 +            VStack(alignment: .leading, spacing: 20) {
-+                HStack {
-+                    SectionHeading(title: ShellStrings.text("Game info"))
++                HStack(spacing: 8) {
++                    PlatformSelector(platforms: tabs, current: tabs[min(tab, 1)], showsHints: showsHints,
++                                     choose: { name in tab = tabs.firstIndex(of: name) ?? 0 }, idPrefix: "info.tab.")
 +                    Spacer(minLength: 8)
++                    Button(action: toggleFavourite) {
++                        Image(systemName: game.stats.favourite ? "heart.fill" : "heart").frame(minWidth: 18)
++                            .foregroundStyle(game.stats.favourite ? Color(red: 1, green: 0.36, blue: 0.45) : .white)
++                    }
++                    .buttonStyle(ChipButtonStyle())
++                    .accessibilityLabel(game.stats.favourite ? ShellStrings.text("Remove from favourites") : ShellStrings.text("Favourite"))
++                    .accessibilityAddTraits(game.stats.favourite ? .isSelected : [])
++                    .accessibilityIdentifier("info.favourite")
++                    .shellTarget("info.favourite", radius: 22, action: toggleFavourite)
 +                    Button(action: close) { Image(systemName: "xmark").frame(minWidth: 18) }
 +                        .buttonStyle(ChipButtonStyle())
 +                        .accessibilityLabel(ShellStrings.text("Close"))
@@ -1788,86 +1929,178 @@ index 0000000..93cb0e0
 +                        .shellTarget("info.close", radius: 22, action: close)
 +                }
 +                .id("info.top")
-+                HStack(alignment: .center, spacing: 16) {
-+                    ArtView(game: game, lettering: false, whole: game.webURL != nil)
-+                        .frame(width: game.isCart64 ? 96 : 70, height: (game.isCart64 ? 96 : 70) / CGFloat(game.boxRatio))
-+                        .clipShape(RoundedRectangle(cornerRadius: 5))
-+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.white.opacity(0.16)))
-+                        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
-+                        .accessibilityHidden(true)
-+                    VStack(alignment: .leading, spacing: 7) {
-+                        StatusLabel(state: game.state, prominent: true)
-+                        Text(game.title).shellType(ShellType.pageTitle).lineLimit(3).minimumScaleFactor(0.8)
-+                            .fixedSize(horizontal: false, vertical: true)
-+                            .accessibilityAddTraits(.isHeader).accessibilityIdentifier("info.title")
-+                        if !game.subtitle.isEmpty {
-+                            Text(game.subtitle).shellType(ShellType.note).foregroundStyle(.white.opacity(0.5))
-+                        }
-+                    }
-+                }
-+                EqualRow(spacing: 8) {
-+                    StatTile(label: ShellStrings.text("Played"), value: ShellFormat.playTime(game.stats.seconds))
-+                    StatTile(label: ShellStrings.text("Last played"), value: ShellFormat.lastPlayed(game.stats.lastPlayed))
-+                    StatTile(label: ShellStrings.text("Launches"), value: "\(game.stats.launches)")
-+                }
-+                .accessibilityElement(children: .combine)
-+                .accessibilityIdentifier("info.stats")
-+                Button(action: primary) {
-+                    Label(game.state.actionTitle, systemImage: game.state.actionSymbol)
-+                }
-+                .buttonStyle(PrimaryPillStyle(expands: true))
-+                .accessibilityIdentifier("info.play")
-+                .accessibilityLabel(game.state.actionTitle + ", " + game.title)
-+                .shellTarget("info.play", radius: 25, action: primary)
-+                if !game.state.explanation.isEmpty {
-+                    Text(game.state.explanation).shellText(14).foregroundStyle(.white.opacity(0.72))
-+                        .fixedSize(horizontal: false, vertical: true)
-+                }
-+                EqualRow(spacing: 10) {
-+                    Button(action: openBox) { Label(ShellStrings.text("Open the box"), systemImage: "shippingbox") }
-+                        .buttonStyle(ShellButtonStyle(fills: true))
-+                        .accessibilityIdentifier("info.box")
-+                        .shellTarget("info.box", radius: 9, action: openBox)
-+                    Button(action: openSettings) { Label(ShellStrings.text("Game settings"), systemImage: "slider.horizontal.3") }
-+                        .buttonStyle(ShellButtonStyle(fills: true))
-+                        .accessibilityIdentifier("info.settings")
-+                        .shellTarget("info.settings", radius: 9, action: openSettings)
-+                }
-+                Text(ShellStrings.text("Play time and launches are counted by this app, on this device."))
-+                    .shellType(ShellType.note).foregroundStyle(.white.opacity(0.4))
-+                    .fixedSize(horizontal: false, vertical: true)
-+                if !game.synopsis.isEmpty || !game.screens.isEmpty {
-+                    VStack(alignment: .leading, spacing: 12) {
-+                        SectionHeading(title: ShellStrings.text("About the game"))
-+                        if !game.synopsis.isEmpty {
-+                            Text(game.synopsis).shellText(14.5).foregroundStyle(.white.opacity(0.8))
-+                                .lineSpacing(2)
-+                                .fixedSize(horizontal: false, vertical: true)
-+                                .accessibilityIdentifier("info.synopsis")
-+                        }
-+                        if !game.screens.isEmpty {
-+                            ScreenshotStrip(screens: game.screens, open: openScreenshot)
-+                                .id("info.shots")
-+                                .padding(.horizontal, -22)
-+                                .contentMargins(.horizontal, 22, for: .scrollContent)
-+                        }
-+                    }
-+                    .padding(.top, 6)
-+                }
++                header(game)
++                if tab == 0 { overview(game) } else { yourPlay(game) }
 +            }
 +            .padding(22)
++            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: tab)
 +        }
 +        .scrollIndicators(.hidden)
 +        .onChange(of: focus.id) { _, id in
 +            // Keeps the focused control in view, the screenshots included, on a short screen.
 +            guard let id, id.hasPrefix("info.") else { return }
++            let top = id == "info.close" || id == "info.favourite"
 +            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-+                proxy.scrollTo(id == "info.close" ? "info.top" : (id.hasPrefix("info.shot.") ? "info.shots" : id),
-+                               anchor: id == "info.close" ? .top : .center)
++                proxy.scrollTo(top ? "info.top" : (id.hasPrefix("info.shot.") ? "info.shots" : id), anchor: top ? .top : .center)
 +            }
 +        }
++        .onChange(of: tab) { _, _ in proxy.scrollTo("info.top", anchor: .top) }
++        .onChange(of: detail.id) { _, _ in tab = 0 }
 +        }
 +        .foregroundStyle(.white)
++    }
++
++    private func header(_ game: GameTile) -> some View {
++        HStack(alignment: .center, spacing: 16) {
++            ArtView(game: game, lettering: false, whole: game.webURL != nil)
++                .frame(width: game.isCart64 ? 96 : 70, height: (game.isCart64 ? 96 : 70) / CGFloat(game.boxRatio))
++                .clipShape(RoundedRectangle(cornerRadius: 5))
++                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.white.opacity(0.16)))
++                .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
++                .accessibilityHidden(true)
++            VStack(alignment: .leading, spacing: 7) {
++                StatusLabel(state: game.state, prominent: true)
++                Text(game.title).shellType(ShellType.pageTitle).lineLimit(3).minimumScaleFactor(0.8)
++                    .fixedSize(horizontal: false, vertical: true)
++                    .accessibilityAddTraits(.isHeader).accessibilityIdentifier("info.title")
++                if !game.subtitle.isEmpty {
++                    Text(game.subtitle).shellType(ShellType.note).foregroundStyle(.white.opacity(0.5))
++                }
++            }
++        }
++    }
++
++    @ViewBuilder private func overview(_ game: GameTile) -> some View {
++        EqualRow(spacing: 8) {
++            StatTile(label: ShellStrings.text("Played"), value: ShellFormat.playTime(game.stats.seconds))
++            StatTile(label: ShellStrings.text("Last played"), value: ShellFormat.lastPlayed(game.stats.lastPlayed))
++            StatTile(label: ShellStrings.text("Launches"), value: "\(game.stats.launches)")
++        }
++        .accessibilityElement(children: .combine)
++        .accessibilityIdentifier("info.stats")
++        Button(action: primary) {
++            Label(game.state.actionTitle, systemImage: game.state.actionSymbol)
++        }
++        .buttonStyle(PrimaryPillStyle(expands: true))
++        .accessibilityIdentifier("info.play")
++        .accessibilityLabel(game.state.actionTitle + ", " + game.title)
++        .shellTarget("info.play", radius: 25, action: primary)
++        if !game.state.explanation.isEmpty {
++            Text(game.state.explanation).shellText(14).foregroundStyle(.white.opacity(0.72))
++                .fixedSize(horizontal: false, vertical: true)
++        }
++        EqualRow(spacing: 10) {
++            Button(action: openBox) { Label(ShellStrings.text("Open the box"), systemImage: "shippingbox") }
++                .buttonStyle(ShellButtonStyle(fills: true))
++                .accessibilityIdentifier("info.box")
++                .shellTarget("info.box", radius: 9, action: openBox)
++            Button(action: openSettings) { Label(ShellStrings.text("Game settings"), systemImage: "slider.horizontal.3") }
++                .buttonStyle(ShellButtonStyle(fills: true))
++                .accessibilityIdentifier("info.settings")
++                .shellTarget("info.settings", radius: 9, action: openSettings)
++        }
++        if !game.synopsis.isEmpty || !game.screens.isEmpty {
++            VStack(alignment: .leading, spacing: 12) {
++                SectionHeading(title: ShellStrings.text("About the game"))
++                if !game.synopsis.isEmpty {
++                    Text(game.synopsis).shellText(14.5).foregroundStyle(.white.opacity(0.8))
++                        .lineSpacing(2)
++                        .fixedSize(horizontal: false, vertical: true)
++                        .accessibilityIdentifier("info.synopsis")
++                }
++                if !game.screens.isEmpty {
++                    ScreenshotStrip(screens: game.screens, open: openScreenshot)
++                        .id("info.shots")
++                        .padding(.horizontal, -22)
++                        .contentMargins(.horizontal, 22, for: .scrollContent)
++                }
++            }
++            .padding(.top, 6)
++        }
++    }
++
++    @ViewBuilder private func yourPlay(_ game: GameTile) -> some View {
++        let s = game.stats
++        VStack(spacing: 8) {
++            EqualRow(spacing: 8) {
++                StatTile(label: ShellStrings.text("Played"), value: ShellFormat.playTime(s.seconds))
++                StatTile(label: ShellStrings.text("Launches"), value: "\(s.launches)")
++            }
++            EqualRow(spacing: 8) {
++                StatTile(label: ShellStrings.text("Average session"), value: s.average.map(ShellFormat.playTime) ?? "–")
++                StatTile(label: ShellStrings.text("Longest session"), value: s.longest.map(ShellFormat.playTime) ?? "–")
++            }
++            EqualRow(spacing: 8) {
++                StatTile(label: ShellStrings.text("First played"),
++                         value: s.firstPlayed.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? ShellStrings.text("Not recorded"))
++                StatTile(label: ShellStrings.text("This month"), value: ShellFormat.playTime(s.thisMonth()))
++            }
++        }
++        .accessibilityElement(children: .combine)
++        .accessibilityIdentifier("info.playStats")
++        WeekBars(weeks: s.weekly())
++        VStack(alignment: .leading, spacing: 10) {
++            SectionHeading(title: ShellStrings.text("Status"))
++            EqualRow(spacing: 6) {
++                ForEach(PlayStatus.allCases, id: \.self) { status in
++                    let on = s.status == status
++                    let pick = { setStatus(on ? nil : status) }
++                    Button(action: pick) {
++                        Text(status.title).shellText(12.5, on ? .bold : .semibold, relativeTo: .footnote)
++                            .lineLimit(1).minimumScaleFactor(0.6)
++                            .frame(maxWidth: .infinity, minHeight: 40)
++                            .foregroundStyle(on ? Color.black : Color.white.opacity(0.8))
++                            .background(Capsule().fill(on ? Color.white.opacity(0.92) : Color.white.opacity(0.07)))
++                            .overlay(Capsule().strokeBorder(.white.opacity(on ? 0 : 0.12)))
++                            .contentShape(Capsule())
++                    }
++                    .buttonStyle(.plain)
++                    .accessibilityAddTraits(on ? .isSelected : [])
++                    .accessibilityIdentifier("info.status.\(status.rawValue)")
++                    .shellTarget("info.status.\(status.rawValue)", radius: 20, action: pick)
++                }
++            }
++        }
++        Text(ShellStrings.text("Play time and launches are counted by this app, on this device.") + " "
++             + ShellStrings.text("Sessions are recorded from this version on."))
++            .shellType(ShellType.note).foregroundStyle(.white.opacity(0.4))
++            .fixedSize(horizontal: false, vertical: true)
++    }
++}
++
++/// The hours of the last weeks, a bar each, this week last and lit.
++private struct WeekBars: View {
++    let weeks: [TimeInterval]
++    var body: some View {
++        let top = max(weeks.max() ?? 0, 1)
++        VStack(alignment: .leading, spacing: 10) {
++            HStack(alignment: .firstTextBaseline) {
++                Text(ShellStrings.text("Hours by week").uppercased()).shellType(ShellType.eyebrow).foregroundStyle(ShellPalette.cream.opacity(0.6))
++                Spacer(minLength: 8)
++                Text(ShellFormat.playTime(weeks.last ?? 0)).shellText(15, .bold, relativeTo: .headline).monospacedDigit()
++            }
++            HStack(alignment: .bottom, spacing: 6) {
++                ForEach(Array(weeks.enumerated()), id: \.offset) { index, value in
++                    RoundedRectangle(cornerRadius: 3)
++                        .fill(index == weeks.count - 1 ? Color.white.opacity(0.9) : Color.white.opacity(0.32))
++                        .frame(height: max(3, 56 * value / top))
++                        .frame(maxWidth: .infinity)
++                }
++            }
++            .frame(height: 56, alignment: .bottom)
++            HStack {
++                Text(ShellStrings.text("8 weeks ago"))
++                Spacer()
++                Text(ShellStrings.text("This week"))
++            }
++            .shellType(ShellType.note).foregroundStyle(.white.opacity(0.45))
++        }
++        .padding(.horizontal, 12).padding(.vertical, 11)
++        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11))
++        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.09)))
++        .accessibilityElement(children: .ignore)
++        .accessibilityLabel(ShellStrings.text("Hours by week"))
++        .accessibilityValue(ShellFormat.playTime(weeks.last ?? 0))
 +    }
 +}
 +
@@ -2223,7 +2456,7 @@ index 0000000..4550465
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index eb5e2ef..e78e662 100644
+index eb5e2ef..662d3e7 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -29,7 +29,8 @@ enum ShellLayout: Equatable {
@@ -2236,7 +2469,7 @@ index eb5e2ef..e78e662 100644
      public let controllers: [ControllerInfo]
      public let globalPadMap: PadMap
      /// The controller's state while the button test is open, from the host.
-@@ -37,6 +38,11 @@ public struct LibraryView: View {
+@@ -37,6 +38,15 @@ public struct LibraryView: View {
      public var actions: ShellActions
      public var input: ShellInput?
      @State private var selectedID: String?
@@ -2245,10 +2478,14 @@ index eb5e2ef..e78e662 100644
 +    /// The platform the selector shows, and the browser game open full screen.
 +    @State private var platform: String
 +    @State private var webGame: GameTile?
++    /// When the open browser game's page was opened, for its play session.
++    @State private var webStarted: Date?
++    /// The info panel's tab: 0 Overview, 1 Your play. L and R step through them while the panel is open.
++    @State private var infoTab = 0
      @State private var settingsOpen: Bool
      @State private var shellSettingsOpen: Bool
      @State private var controllersOpen: Bool
-@@ -50,6 +56,11 @@ public struct LibraryView: View {
+@@ -50,6 +60,11 @@ public struct LibraryView: View {
      /// The button-mapping card, while open.
      @State private var padMapping: PadMappingState?
      @State private var buttonTestOpen: Bool
@@ -2260,7 +2497,7 @@ index eb5e2ef..e78e662 100644
      @State private var focus: FocusAppearance
      @State private var targets = FocusTargetBuffer()
      @State private var settingsPosition = ScrollPosition()
-@@ -71,17 +82,21 @@ public struct LibraryView: View {
+@@ -71,17 +86,21 @@ public struct LibraryView: View {
                  input: ShellInput? = nil, initialSelection: String? = nil, initialDetailOpen: Bool = false,
                  initialControllersOpen: Bool = false, initialShellSettingsOpen: Bool = false, initialFocusVisible: Bool = false,
                  globalPadMap: PadMap = PadMap(), padSnapshot: PadSnapshot? = nil,
@@ -2284,7 +2521,7 @@ index eb5e2ef..e78e662 100644
          _settingsOpen = State(initialValue: initialDetailOpen)
          _controllersOpen = State(initialValue: initialControllersOpen)
          _shellSettingsOpen = State(initialValue: initialShellSettingsOpen)
-@@ -89,6 +104,14 @@ public struct LibraryView: View {
+@@ -89,6 +108,14 @@ public struct LibraryView: View {
          _touchMode = State(initialValue: !initialFocusVisible)
      }
      private var selected: GameDetail? { games.first { $0.id == selectedID } ?? games.first }
@@ -2299,7 +2536,7 @@ index eb5e2ef..e78e662 100644
  
      public var body: some View {
          GeometryReader { geometry in
-@@ -104,7 +127,9 @@ public struct LibraryView: View {
+@@ -104,7 +131,9 @@ public struct LibraryView: View {
              let paneCovers = settingsOpen && !floating
              let panelOverLibrary = settingsOpen && floating
              ZStack(alignment: .topLeading) {
@@ -2310,7 +2547,7 @@ index eb5e2ef..e78e662 100644
                  if games.isEmpty {
                      EmptyLibraryView()
                          .overlay(alignment: .topTrailing) {
-@@ -114,12 +139,38 @@ public struct LibraryView: View {
+@@ -114,12 +143,40 @@ public struct LibraryView: View {
                              }.padding(.top, 6).padding(.trailing, 16)
                          }
                  } else if let selected {
@@ -2331,7 +2568,9 @@ index eb5e2ef..e78e662 100644
 +                            .accessibilityHidden(true)
 +                            .transition(.opacity)
 +                        GameInfoPanel(detail: selected, primary: { primary(selected) }, openBox: openBox,
-+                                      openSettings: openSettings, openScreenshot: openShot, close: closeInfo)
++                                      openSettings: openSettings, openScreenshot: openShot, close: closeInfo,
++                                      setStatus: { actions.onSetStatus(selected.id, $0) },
++                                      toggleFavourite: { actions.onToggleFavourite(selected.id) }, tab: $infoTab, showsHints: !touchMode)
 +                            .padding(.trailing, insets.trailing)
 +                            .frame(width: panel + insets.trailing)
 +                            .frame(maxHeight: .infinity)
@@ -2349,7 +2588,7 @@ index eb5e2ef..e78e662 100644
                      if panelOverLibrary {
                          // The same dimming and dismissal as the Controllers overlay.
                          Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
-@@ -147,6 +198,29 @@ public struct LibraryView: View {
+@@ -147,6 +204,29 @@ public struct LibraryView: View {
                          .accessibilityAddTraits(settingsOpen ? .isModal : [])
                          .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
                  }
@@ -2379,7 +2618,7 @@ index eb5e2ef..e78e662 100644
                  if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
                      Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
                          .onTapGesture { closeHelp() }
-@@ -235,13 +309,16 @@ public struct LibraryView: View {
+@@ -235,13 +315,16 @@ public struct LibraryView: View {
              .transformPreference(FocusTargets.self) { values in
                  values = values.filter { target in
                      if buttonTestOpen { return target.id.hasPrefix("test.") }
@@ -2397,7 +2636,7 @@ index eb5e2ef..e78e662 100644
                  }
              }
              .coordinateSpace(name: "shell")
-@@ -265,6 +342,9 @@ public struct LibraryView: View {
+@@ -265,6 +348,9 @@ public struct LibraryView: View {
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
@@ -2407,7 +2646,7 @@ index eb5e2ef..e78e662 100644
          .environment(\.shellPickChoice, { request in openChoice(request) })
          .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
          .environment(\.shellOpenButtonTest, { openButtonTest() })
-@@ -289,15 +369,18 @@ public struct LibraryView: View {
+@@ -289,15 +375,18 @@ public struct LibraryView: View {
          .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
          .onDisappear { targets.values.removeAll() }
          .onChange(of: games.map(\.id)) { _, ids in
@@ -2429,7 +2668,7 @@ index eb5e2ef..e78e662 100644
                  .equatable()
                  .transition(.opacity)
          } else {
-@@ -368,6 +451,7 @@ public struct LibraryView: View {
+@@ -368,6 +457,7 @@ public struct LibraryView: View {
      }
      private func primary(_ detail: GameDetail) {
          noteTouch()
@@ -2437,16 +2676,19 @@ index eb5e2ef..e78e662 100644
          if detail.game.state.needsHelp { openHelp(detail.id); return }
          switch detail.game.state {
          case .playable: actions.onPlay(detail.id)
-@@ -376,6 +460,31 @@ public struct LibraryView: View {
+@@ -376,6 +466,34 @@ public struct LibraryView: View {
          case .broken: actions.onShowLog(detail.id)
          }
      }
 +    /// A browser game: its page full screen, over the library, which keeps its place behind it.
 +    private func openWeb(_ detail: GameDetail) {
 +        actions.onSelect(detail.id)
++        webStarted = Date()
 +        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { webGame = detail.game }
 +    }
 +    private func closeWeb() {
++        if let id = webGame?.id, let start = webStarted { actions.onWebPlayed(id, start, Date()) }
++        webStarted = nil
 +        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { webGame = nil; boxOpen = false; infoOpen = false }
 +    }
 +    /// The selector: the platform's games, the first of them chosen.
@@ -2469,7 +2711,7 @@ index eb5e2ef..e78e662 100644
      private func select(_ id: String) {
          noteTouch()
          guard id != selectedID else { return }
-@@ -406,7 +515,47 @@ public struct LibraryView: View {
+@@ -406,7 +524,48 @@ public struct LibraryView: View {
      }
      private func closeSettings() {
          settingsOpen = false
@@ -2494,6 +2736,7 @@ index eb5e2ef..e78e662 100644
 +    private func closeInfo() {
 +        shotIndex = nil
 +        infoOpen = false
++        infoTab = 0
 +        boxOpen = false
 +        focus.id = selected.map { "lib.tile.\($0.id)" }
 +    }
@@ -2518,7 +2761,7 @@ index eb5e2ef..e78e662 100644
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -493,7 +642,9 @@ public struct LibraryView: View {
+@@ -493,7 +652,9 @@ public struct LibraryView: View {
          focus.id = "ctl.test"
      }
      private func back() {
@@ -2529,7 +2772,7 @@ index eb5e2ef..e78e662 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -502,11 +653,20 @@ public struct LibraryView: View {
+@@ -502,11 +663,25 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -2544,13 +2787,18 @@ index eb5e2ef..e78e662 100644
 +        if action == .exitGame { return }
 +        if action == .previousTab || action == .nextTab {
 +            if !settingsOpen && !shellSettingsOpen && !controllersOpen && choice == nil && padMapping == nil && !buttonTestOpen
-+                && helpGameID == nil && deleteGameID == nil { stepPlatform(action == .previousTab ? -1 : 1) }
++                && helpGameID == nil && deleteGameID == nil {
++                if infoOpen && layout.isCoverFlow && shotIndex == nil && !boxOpen {
++                    infoTab = action == .previousTab ? 0 : 1
++                    focus.id = infoTab == 0 ? "info.play" : "info.status.\(PlayStatus.playing.rawValue)"
++                } else { stepPlatform(action == .previousTab ? -1 : 1) }
++            }
 +            return
 +        }
          // Every controller button belongs to the button test while it is open: it closes on B held, touch or Escape.
          if buttonTestOpen, case .controller = source { return }
          if device != source { device = source }
-@@ -522,6 +682,11 @@ public struct LibraryView: View {
+@@ -522,6 +697,11 @@ public struct LibraryView: View {
          case .settings: openSettings()
          case .controllers: openControllers()
          case .left, .right:
@@ -2562,7 +2810,7 @@ index eb5e2ef..e78e662 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -541,6 +706,8 @@ public struct LibraryView: View {
+@@ -541,6 +721,8 @@ public struct LibraryView: View {
          if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
      }
      private var defaultFocus: String? {
@@ -2571,7 +2819,7 @@ index eb5e2ef..e78e662 100644
          if buttonTestOpen { return "test.close" }
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
-@@ -549,6 +716,7 @@ public struct LibraryView: View {
+@@ -549,6 +731,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -2580,7 +2828,7 @@ index eb5e2ef..e78e662 100644
      }
  }
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 2a2db87..bf69cf8 100644
+index 2a2db87..8e4fcaf 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -1,6 +1,126 @@
@@ -3480,7 +3728,7 @@ index 2a2db87..bf69cf8 100644
      "Your games": {
        "localizations": {
          "en": {
-@@ -5936,7 +6664,327 @@
+@@ -5936,7 +6664,1047 @@
            }
          }
        }
@@ -3804,6 +4052,726 @@ index 2a2db87..bf69cf8 100644
 +          }
 +        }
 +      }
++    },
++    "Overview": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Overview"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Aperçu"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Überblick"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Panoramica"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Översikt"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "概览"
++          }
++        }
++      }
++    },
++    "Your play": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Your play"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Tes parties"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Deine Spielzeit"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Le tue partite"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ditt spelande"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游玩记录"
++          }
++        }
++      }
++    },
++    "Favourite": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Favourite"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ajouter aux favoris"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Zu Favoriten"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Aggiungi ai preferiti"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Lägg till favorit"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "收藏"
++          }
++        }
++      }
++    },
++    "Remove from favourites": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Remove from favourites"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Retirer des favoris"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Aus Favoriten entfernen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Rimuovi dai preferiti"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ta bort från favoriter"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "取消收藏"
++          }
++        }
++      }
++    },
++    "Average session": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Average session"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Session moyenne"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ø Sitzung"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sessione media"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Snittpass"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "平均时长"
++          }
++        }
++      }
++    },
++    "Longest session": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Longest session"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Plus longue session"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Längste Sitzung"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sessione più lunga"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Längsta pass"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "最长时长"
++          }
++        }
++      }
++    },
++    "First played": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "First played"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Première partie"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Zuerst gespielt"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Prima partita"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Först spelat"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "首次游玩"
++          }
++        }
++      }
++    },
++    "This month": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "This month"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ce mois-ci"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Diesen Monat"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Questo mese"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Denna månad"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "本月"
++          }
++        }
++      }
++    },
++    "Not recorded": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Not recorded"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Non enregistré"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Nicht erfasst"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Non registrato"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Inte registrerat"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "未记录"
++          }
++        }
++      }
++    },
++    "Hours by week": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Hours by week"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Heures par semaine"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Stunden pro Woche"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ore a settimana"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Timmar per vecka"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "每周时长"
++          }
++        }
++      }
++    },
++    "8 weeks ago": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "8 weeks ago"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Il y a 8 semaines"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Vor 8 Wochen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "8 settimane fa"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "8 veckor sedan"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "8 周前"
++          }
++        }
++      }
++    },
++    "This week": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "This week"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Cette semaine"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Diese Woche"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Questa settimana"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Denna vecka"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "本周"
++          }
++        }
++      }
++    },
++    "Status": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Status"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Statut"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Status"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Stato"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Status"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "状态"
++          }
++        }
++      }
++    },
++    "Not started": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Not started"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Pas commencé"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Nicht begonnen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Non iniziato"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Inte påbörjat"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "未开始"
++          }
++        }
++      }
++    },
++    "Playing": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Playing"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "En cours"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Am Spielen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "In corso"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spelar"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游玩中"
++          }
++        }
++      }
++    },
++    "Finished": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Finished"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Terminé"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Durchgespielt"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Finito"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Klart"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "已通关"
++          }
++        }
++      }
++    },
++    "Abandoned": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Abandoned"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Abandonné"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Abgebrochen"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Abbandonato"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Övergivet"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "已放弃"
++          }
++        }
++      }
++    },
++    "Sessions are recorded from this version on.": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sessions are recorded from this version on."
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Les sessions sont enregistrées à partir de cette version."
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sitzungen werden ab dieser Version erfasst."
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Le sessioni sono registrate da questa versione in poi."
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spelpass registreras från och med den här versionen."
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "从此版本起记录每次游玩。"
++          }
++        }
++      }
      }
    },
    "version": "1.0"
@@ -3870,7 +4838,7 @@ index 6c2c8d0..6d0d761 100644
      public static func metaLine(_ parts: String?...) -> String {
          parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
 diff --git a/frontend-ios/Sources/ShellUI/ShellInputs.swift b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-index 4533d0e..9798a31 100644
+index 4533d0e..4587837 100644
 --- a/frontend-ios/Sources/ShellUI/ShellInputs.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellInputs.swift
 @@ -24,8 +24,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
@@ -3906,7 +4874,7 @@ index 4533d0e..9798a31 100644
          self.id = id
          self.title = title
          self.subtitle = subtitle
-@@ -33,6 +56,35 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -33,6 +56,93 @@ public struct GameTile: Identifiable, Equatable, Sendable {
          self.icon = icon
          self.state = state
          self.recentlyPlayed = recentlyPlayed
@@ -3935,14 +4903,72 @@ index 4533d0e..9798a31 100644
 +    /// The time played, all sessions together.
 +    public var seconds: TimeInterval
 +    public var lastPlayed: Date?
-+    public init(launches: Int = 0, seconds: TimeInterval = 0, lastPlayed: Date? = nil) {
++    /// The sessions closed since the app keeps them (the totals above go back further), oldest first.
++    public var sessions: [PlaySession]
++    /// Where the player says they are with the game, nil until they say.
++    public var status: PlayStatus?
++    public var favourite: Bool
++    public init(launches: Int = 0, seconds: TimeInterval = 0, lastPlayed: Date? = nil, sessions: [PlaySession] = [],
++                status: PlayStatus? = nil, favourite: Bool = false) {
 +        self.launches = launches
 +        self.seconds = seconds
 +        self.lastPlayed = lastPlayed
++        self.sessions = sessions
++        self.status = status
++        self.favourite = favourite
++    }
++}
++
++/// One play session: when it began and how long it lasted.
++public struct PlaySession: Equatable, Sendable {
++    public var start: Date
++    public var seconds: TimeInterval
++    public init(start: Date, seconds: TimeInterval) {
++        self.start = start
++        self.seconds = seconds
++    }
++}
++
++/// The player's own word on a game, chosen in the info panel.
++public enum PlayStatus: String, CaseIterable, Sendable {
++    case notStarted, playing, finished, abandoned
++    public var title: String {
++        switch self {
++        case .notStarted: ShellStrings.text("Not started")
++        case .playing: ShellStrings.text("Playing")
++        case .finished: ShellStrings.text("Finished")
++        case .abandoned: ShellStrings.text("Abandoned")
++        }
++    }
++}
++
++/// The figures of the Your play tab, from the sessions.
++public extension PlayStats {
++    /// The mean session: from the kept sessions, else from the totals.
++    var average: TimeInterval? {
++        if !sessions.isEmpty { return sessions.map(\.seconds).reduce(0, +) / Double(sessions.count) }
++        return launches > 0 && seconds > 0 ? seconds / Double(launches) : nil
++    }
++    var longest: TimeInterval? { sessions.map(\.seconds).max() }
++    var firstPlayed: Date? { sessions.map(\.start).min() }
++    func thisMonth(now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
++        sessions.filter { calendar.isDate($0.start, equalTo: now, toGranularity: .month) }.map(\.seconds).reduce(0, +)
++    }
++    /// The time played in each of the last `count` calendar weeks, the oldest first and this week last.
++    func weekly(_ count: Int = 8, now: Date = Date(), calendar: Calendar = .current) -> [TimeInterval] {
++        guard let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start else { return Array(repeating: 0, count: count) }
++        var weeks = Array(repeating: 0.0, count: count)
++        for s in sessions {
++            guard let start = calendar.dateInterval(of: .weekOfYear, for: s.start)?.start,
++                  let back = calendar.dateComponents([.weekOfYear], from: start, to: thisWeek).weekOfYear,
++                  back >= 0, back < count else { continue }
++            weeks[count - 1 - back] += s.seconds
++        }
++        return weeks
      }
  }
  
-@@ -158,7 +210,9 @@ public enum InputDevice: Equatable, Sendable {
+@@ -158,7 +268,9 @@ public enum InputDevice: Equatable, Sendable {
  
  /// An optional event supplied by the host's input adapter. Increment sequence for repeated presses.
  public struct ShellInput: Equatable, Sendable {
@@ -3953,6 +4979,18 @@ index 4533d0e..9798a31 100644
      public var sequence: Int
      public var action: Action
      public var device: InputDevice
+@@ -218,6 +330,11 @@ public struct ShellActions {
+     public var onButtonTest: (Bool) -> Void
+     /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
+     public var onDeleteGame: (_ gameID: String, _ saves: Bool) -> Void
++    /// The player's status for the game (nil: none), and the favourite mark turned on or off.
++    public var onSetStatus: (_ gameID: String, _ status: PlayStatus?) -> Void = { _, _ in }
++    public var onToggleFavourite: (String) -> Void = { _ in }
++    /// A browser game was played from `start` to `end` (its page was open over the library).
++    public var onWebPlayed: (_ gameID: String, _ start: Date, _ end: Date) -> Void = { _, _, _ in }
+     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
+                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
+                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
 diff --git a/frontend-ios/Sources/ShellUI/ShellStyle.swift b/frontend-ios/Sources/ShellUI/ShellStyle.swift
 index 99ecd78..38efbb6 100644
 --- a/frontend-ios/Sources/ShellUI/ShellStyle.swift
@@ -4244,10 +5282,10 @@ index 0000000..a3bf545
 +}
 diff --git a/frontend-ios/Tests/ShellHostTests/PlayStatsTests.swift b/frontend-ios/Tests/ShellHostTests/PlayStatsTests.swift
 new file mode 100644
-index 0000000..61bd6ec
+index 0000000..8ededfd
 --- /dev/null
 +++ b/frontend-ios/Tests/ShellHostTests/PlayStatsTests.swift
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,153 @@
 +import Foundation
 +import Testing
 +import ShellUI
@@ -4268,6 +5306,48 @@ index 0000000..61bd6ec
 +        store.settle(lastSign: nil)
 +        #expect(store.seconds == 600)
 +        #expect(store.openSession == nil)
++    }
++
++    @Test func aClosedSessionIsKeptForTheFigures() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        store.begin(t0)
++        store.alive(t0.addingTimeInterval(600))
++        store.settle(lastSign: nil)
++        store.record(start: t0.addingTimeInterval(10_000), end: t0.addingTimeInterval(11_800))
++        #expect(store.sessions == [PlaySession(start: t0, seconds: 600), PlaySession(start: t0.addingTimeInterval(10_000), seconds: 1800)])
++        #expect(store.launches == 2)
++        #expect(store.seconds == 2400)
++        let stats = PlayStats(launches: 2, seconds: 2400, sessions: store.sessions)
++        #expect(stats.average == 1200)
++        #expect(stats.longest == 1800)
++        #expect(stats.firstPlayed == t0)
++    }
++
++    @Test func theStatusAndTheFavouriteAreKept() throws {
++        let box = try Sandbox()
++        let store = PlayStatsStore(defaults: box.defaults(Fixtures.orbit))
++        #expect(store.status == nil)
++        #expect(!store.favourite)
++        store.setStatus(.finished)
++        store.setFavourite(true)
++        #expect(store.status == .finished)
++        #expect(store.favourite)
++        store.setStatus(nil)
++        #expect(store.status == nil)
++    }
++
++    @Test func theWeeksCountBackFromThisOne() {
++        var calendar = Calendar(identifier: .gregorian)
++        calendar.timeZone = TimeZone(identifier: "UTC")!
++        let now = Date(timeIntervalSince1970: 1_800_000_000)
++        let stats = PlayStats(sessions: [PlaySession(start: now, seconds: 3600), PlaySession(start: now.addingTimeInterval(-7 * 86_400), seconds: 600),
++                                         PlaySession(start: now.addingTimeInterval(-70 * 86_400), seconds: 999)])
++        let weeks = stats.weekly(8, now: now, calendar: calendar)
++        #expect(weeks.count == 8)
++        #expect(weeks[7] == 3600)
++        #expect(weeks[6] == 600)
++        #expect(weeks.reduce(0, +) == 4200)
 +    }
 +
 +    @Test func theLogsLastWriteCountsWhenItIsLater() throws {
@@ -4426,10 +5506,10 @@ index 1c29841..a647667 100644
          #expect(ShellFormat.version("") == "")
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..ad5a16f
+index 0000000..36d5ec8
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,192 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -4495,6 +5575,13 @@ index 0000000..ad5a16f
 +        XCTAssertFalse(app.buttons["box.toggle"].exists)
 +        sleep(1)
 +        shot("touch-05-info-panel")
++        // The Your play tab, in the platform selector's capsule, then back to Overview.
++        app.buttons["info.tab.Your play"].tap()
++        XCTAssertTrue(app.buttons["info.status.playing"].waitForExistence(timeout: 5))
++        sleep(1)
++        shot("touch-05a-info-your-play")
++        app.buttons["info.tab.Overview"].tap()
++        XCTAssertTrue(app.buttons["info.play"].waitForExistence(timeout: 5))
 +        // What the game is about: the synopsis and the screenshots, one opened full screen and the next one swiped to.
 +        let first = app.buttons["info.shot.0"]
 +        XCTAssertTrue(first.waitForExistence(timeout: 5))
