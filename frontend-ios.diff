@@ -27,11 +27,34 @@ index 3e73599..9664cd2 100644
          }
          let before = held[controller] ?? []
          let pressed = now.filter { !before.contains($0.key) }.sorted { $0.key < $1.key }.map(\.value)
+diff --git a/frontend-ios/Sources/ShellDemo/SampleArt.swift b/frontend-ios/Sources/ShellDemo/SampleArt.swift
+index 9b4bf13..52b6b6c 100644
+--- a/frontend-ios/Sources/ShellDemo/SampleArt.swift
++++ b/frontend-ios/Sources/ShellDemo/SampleArt.swift
+@@ -10,6 +10,18 @@ import ShellUI
+     /// The square icon, with the game's lettering, as a NACP icon has it.
+     static func icon(_ id: String) -> Artwork? { render(id, lettering: true) }
+ 
++    /// A box cover of another console's shape (`ratio` wide for 1 tall: a PS2 case, a wide N64 box), from the same picture
++    /// filling it, so the demo shows a cover whole in its own box.
++    static func cover(_ id: String, ratio: CGFloat) -> Artwork? {
++        _ = ShellFonts.font(12)
++        let height: CGFloat = 400
++        let renderer = ImageRenderer(content: composition(id).environment(\.lettering, true)
++            .frame(width: max(height, height * ratio), height: max(height, height * ratio))
++            .frame(width: height * ratio, height: height).clipped())
++        renderer.scale = 2.5
++        return renderer.cgImage.map { Artwork(id: "sample.cover.\(id).\(ratio)", image: $0) }
++    }
++
+     private static func render(_ id: String, lettering: Bool) -> Artwork? {
+         let key = "\(id).\(lettering)"
+         if let art = cache[key] { return art }
 diff --git a/frontend-ios/Sources/ShellDemo/SampleData.swift b/frontend-ios/Sources/ShellDemo/SampleData.swift
-index ac4358f..5dc064e 100644
+index ac4358f..4577d5c 100644
 --- a/frontend-ios/Sources/ShellDemo/SampleData.swift
 +++ b/frontend-ios/Sources/ShellDemo/SampleData.swift
-@@ -27,7 +27,18 @@ func demoText(_ key: String.LocalizationValue) -> String {
+@@ -27,7 +27,31 @@ func demoText(_ key: String.LocalizationValue) -> String {
              // Always fictional: the icon-only fallback, a square icon inside a wide card.
              SampleArt.tile("amber", title: "Amber Hours", version: "1.0.2", real: nil)
          ]
@@ -45,13 +68,26 @@ index ac4358f..5dc064e 100644
 +                tile.subtitle = "PS2"
 +                tile.backdrop = tile.banner ?? tile.icon
 +                tile.synopsis = demoText("A fighting game on the street, played in the browser.")
++                tile.banner = SampleArt.cover("moon", ratio: 0.71)
 +                return tile
 +            } : []
-+        return (tiles.map(withStats) + web).map { tile in
++        // --web64: a browser game under N64, in its wide box with a grey cartridge
++        let web64 = ProcessInfo.processInfo.arguments.contains("--web64")
++            ? [SampleArt.tile("kart", title: "Kart Valley", version: "N64", real: nil)].map { tile -> GameTile in
++                var tile = tile
++                tile.platform = "N64"
++                tile.webURL = URL(string: "https://example.com/")
++                tile.subtitle = "N64"
++                tile.banner = SampleArt.cover("drift", ratio: 1.43)
++                tile.backdrop = tile.banner
++                tile.synopsis = demoText("A kart race in the valley, played in the browser.")
++                return tile
++            } : []
++        return (tiles.map(withStats) + web + web64).map { tile in
              GameDetail(game: tile, sections: [
                  SettingSection(id: "game", title: demoText("Game"), rows: [
                      SettingRow(id: "DM_OPERATION_MODE", label: demoText("Play mode"), note: demoText("The game's display and performance profile."), kind: .choice([SettingOption("handheld", demoText("Handheld")), SettingOption("docked", demoText("Docked"))]), value: "handheld"),
-@@ -47,6 +58,22 @@ func demoText(_ key: String.LocalizationValue) -> String {
+@@ -47,6 +71,22 @@ func demoText(_ key: String.LocalizationValue) -> String {
                         cloudFromShell: tile.id == "orbit")
          }
      }
@@ -682,7 +718,7 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..9a1a6da 100644
+index 8651917..20daa71 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -16,6 +16,11 @@ struct CoverFlowView: View, Equatable {
@@ -705,7 +741,7 @@ index 8651917..9a1a6da 100644
      }
  
      var body: some View {
-@@ -43,23 +49,25 @@ struct CoverFlowView: View, Equatable {
+@@ -43,23 +49,27 @@ struct CoverFlowView: View, Equatable {
              // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
              // bottom edge, and never so wide that the neighbours vanish.
              let height = geometry.size.height
@@ -721,8 +757,10 @@ index 8651917..9a1a6da 100644
 +            // take all the height between the top bar and the title, centred in it.
 +            let topEdge = Self.barTop(short: short) + Self.barHeight + (short ? 6 : 16)
 +            let room = height - topEdge - gap - words - below
-+            let cardHeight = max(90, min(room / (1.06 + Self.reflection), geometry.size.width * 0.34 / Self.boxRatio))
-+            let cover = cardHeight * Self.boxRatio
++            // The shown platform's boxes: all the same shape (a Switch case, a PS2 case, a wide N64 box).
++            let ratio = CGFloat(games.first?.game.boxRatio ?? Double(Self.boxRatio))
++            let cardHeight = max(90, min(room / (1.06 + Self.reflection), geometry.size.width * 0.34 / ratio))
++            let cover = cardHeight * ratio
 +            let cardTop = topEdge + max(0, (room - cardHeight * (1.06 + Self.reflection)) / 2)
              ZStack(alignment: .top) {
                  VStack(spacing: 0) {
@@ -738,7 +776,7 @@ index 8651917..9a1a6da 100644
                  .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                  topBar(short: short).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
                  if !short {
-@@ -77,13 +85,19 @@ struct CoverFlowView: View, Equatable {
+@@ -77,13 +87,19 @@ struct CoverFlowView: View, Equatable {
              guard centredID != id, !userScrolling else { return }
              withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = id }
          }
@@ -760,7 +798,7 @@ index 8651917..9a1a6da 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -96,8 +110,9 @@ struct CoverFlowView: View, Equatable {
+@@ -96,8 +112,9 @@ struct CoverFlowView: View, Equatable {
              Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                  .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
              Spacer(minLength: 12)
@@ -772,7 +810,7 @@ index 8651917..9a1a6da 100644
                  hints.opacity(showsHints ? 1 : 0)
                  Spacer(minLength: 12)
              }
-@@ -113,6 +128,11 @@ struct CoverFlowView: View, Equatable {
+@@ -113,6 +130,11 @@ struct CoverFlowView: View, Equatable {
          // title and chips, centred in it, would sink away from the top edge, so the row stops growing at xxLarge, as the
          // title under the card does.
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
@@ -784,7 +822,7 @@ index 8651917..9a1a6da 100644
      }
      private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
      private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
-@@ -129,6 +149,7 @@ struct CoverFlowView: View, Equatable {
+@@ -129,6 +151,7 @@ struct CoverFlowView: View, Equatable {
                      // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
                      coverButton(detail, cover: cover)
                          .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
@@ -792,7 +830,7 @@ index 8651917..9a1a6da 100644
                          .id(detail.id)
                  }
              }.scrollTargetLayout()
-@@ -163,6 +184,33 @@ struct CoverFlowView: View, Equatable {
+@@ -163,6 +186,33 @@ struct CoverFlowView: View, Equatable {
          }
          .scrollIndicators(.hidden)
          .scrollClipDisabled()
@@ -826,7 +864,7 @@ index 8651917..9a1a6da 100644
      }
  
      /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
-@@ -190,20 +238,21 @@ struct CoverFlowView: View, Equatable {
+@@ -190,20 +240,21 @@ struct CoverFlowView: View, Equatable {
              // comes to the middle and never starts anything.
              if longPressed { longPressed = false; return }
              if chosen {
@@ -853,7 +891,7 @@ index 8651917..9a1a6da 100644
              longPressed = true
              openSettings()
          })
-@@ -238,6 +287,7 @@ struct CoverFlowView: View, Equatable {
+@@ -238,6 +289,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -861,7 +899,7 @@ index 8651917..9a1a6da 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,9 +296,24 @@ struct CoverFlowView: View, Equatable {
+@@ -246,9 +298,24 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -887,7 +925,7 @@ index 8651917..9a1a6da 100644
              GlyphHint(role: .settings, label: ShellStrings.text("Game settings"))
              GlyphHint(role: .controllers, label: ShellStrings.text("Controllers"))
          }
-@@ -257,6 +322,64 @@ struct CoverFlowView: View, Equatable {
+@@ -257,6 +324,64 @@ struct CoverFlowView: View, Equatable {
      }
  }
  
@@ -898,11 +936,11 @@ index 8651917..9a1a6da 100644
 +    let chosen: Bool
 +    let width: CGFloat
 +    var body: some View {
-+        let height = width / CoverFlowView.boxRatio
-+        let radius = width * 0.035
++        let height = width / CGFloat(game.boxRatio)
++        let radius = min(width, height) * 0.035
 +        let shape = RoundedRectangle(cornerRadius: radius)
 +        let glow = Color(red: 0.35, green: 0.65, blue: 1.0)
-+        ArtView(game: game)
++        ArtView(game: game, whole: game.webURL != nil)
 +            .frame(width: width, height: height)
 +            .clipShape(shape)
 +            .overlay(
@@ -936,7 +974,7 @@ index 8651917..9a1a6da 100644
 +            }
 +            .background(alignment: .top) {
 +                // The reflection: the cover turned over under the box, fading out.
-+                ArtView(game: game, backdrop: false, lettering: false)
++                ArtView(game: game, backdrop: false, lettering: false, whole: game.webURL != nil)
 +                    .frame(width: width, height: height)
 +                    .clipShape(shape)
 +                    .mask(LinearGradient(colors: [.clear, .clear, .white.opacity(0.35)], startPoint: .top, endPoint: .bottom))
@@ -952,7 +990,7 @@ index 8651917..9a1a6da 100644
  /// The way out for a game that cannot start, as one small tappable line in the state's colour: "How to fix ›".
  /// VoiceOver reads the state with it.
  struct StateAction: View {
-@@ -352,25 +475,52 @@ private struct FlowTilt: ViewModifier {
+@@ -352,25 +477,52 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -1016,7 +1054,7 @@ index 8651917..9a1a6da 100644
          }
          .animation(reduceMotion ? .linear(duration: 0.2) : .easeInOut(duration: 0.45), value: game.id)
          .ignoresSafeArea()
-@@ -407,3 +557,45 @@ struct ShellSettingsChip: View {
+@@ -407,3 +559,45 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
@@ -1064,10 +1102,10 @@ index 8651917..9a1a6da 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..5b27369
+index 0000000..2429c7a
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,531 @@
+@@ -0,0 +1,578 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1099,17 +1137,19 @@ index 0000000..5b27369
 +    var body: some View {
 +        GeometryReader { geometry in
 +            // As tall as leaves room for the buttons, and never wider open than the screen.
-+            let height = min(geometry.size.height * 0.72, geometry.size.width * 0.86 / (2 * CoverFlowView.boxRatio))
-+            let width = height * CoverFlowView.boxRatio
++            let ratio = CGFloat(game.boxRatio)
++            let height = min(geometry.size.height * 0.72, geometry.size.width * 0.86 / (2 * ratio))
++            let width = height * ratio
 +            let size = geometry.size
 +            // Where the card lies in the open tray (see CaseTray), on the screen: the tray is the right half of the open case.
 +            let disc = game.isDisc
-+            let card = CGSize(width: width * CaseTray.share(disc), height: width * CaseTray.share(disc) * CaseTray.ratio(disc))
++            let style = CaseStyle.of(game)
++            let card = CGSize(width: width * CaseTray.share(style), height: width * CaseTray.share(style) * CaseTray.ratio(style))
 +            let caseCentre = CGPoint(x: size.width / 2, y: size.height / 2 - height * 0.03)
 +            let inTray = CGPoint(x: caseCentre.x + width / 2,
-+                                 y: caseCentre.y + height / 2 - height * CaseTray.bottom(disc, width: width, height: height) - card.height * 0.55)
++                                 y: caseCentre.y + height / 2 - height * CaseTray.bottom(style, width: width, height: height) - card.height * 0.55)
 +            // The console's slot, at the top right: the card arrives under it at `scale` and goes in upward.
-+            let scale: CGFloat = disc ? 0.5 : 0.55
++            let scale: CGFloat = disc ? 0.5 : game.isCart64 ? 0.42 : 0.55
 +            let slot = CGPoint(x: size.width - 40 - card.width * scale * 0.6, y: 92)
 +            ZStack {
 +                RadialGradient(colors: [Color(red: 0.16, green: 0.17, blue: 0.2).opacity(0.94), .black.opacity(0.94)],
@@ -1137,7 +1177,7 @@ index 0000000..5b27369
 +                        .buttonStyle(.plain)
 +                        .frame(width: card.width * 1.1, height: card.height * 1.1)
 +                        .position(inTray)
-+                        .accessibilityLabel(ShellStrings.text(game.isDisc ? "Insert the disc" : "Insert the game card") + ", " + game.title)
++                        .accessibilityLabel(insertLabel + ", " + game.title)
 +                        .accessibilityIdentifier("box.cart")
 +                        .shellTarget("box.cart", radius: card.width * 0.06, action: play)
 +                        .transition(.opacity)
@@ -1182,7 +1222,7 @@ index 0000000..5b27369
 +                    Spacer(minLength: 0)
 +                    HStack(spacing: 20) {
 +                        if opened && playable {
-+                            GlyphHint(role: .activate, label: ShellStrings.text(game.isDisc ? "Insert the disc" : "Insert the game card"))
++                            GlyphHint(role: .activate, label: insertLabel)
 +                        }
 +                        Button(action: toggle) {
 +                            Label(opened ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"),
@@ -1212,6 +1252,11 @@ index 0000000..5b27369
 +        .environment(\.caseStyle, .of(game))   // a disc and its black case for a disc platform
 +    }
 +
++    /// What the card is called where the player puts it in: a disc, an N64 cartridge, a Switch game card.
++    private var insertLabel: String {
++        ShellStrings.text(game.isDisc ? "Insert the disc" : game.isCart64 ? "Insert the cartridge" : "Insert the game card")
++    }
++
 +    private var statsLine: String {
 +        ShellFormat.metaLine(ShellStrings.text("Played") + " " + ShellFormat.playTime(game.stats.seconds),
 +                             ShellFormat.lastPlayed(game.stats.lastPlayed),
@@ -1219,7 +1264,7 @@ index 0000000..5b27369
 +    }
 +
 +    private func present() {
-+        if playable { InsertSound.prepare(disc: game.isDisc) }
++        if playable { InsertSound.prepare(disc: game.isDisc, cart64: game.isCart64) }
 +        if reduceMotion { shown = true; opened = true; return }
 +        withAnimation(.spring(duration: 0.6, bounce: 0.18)) { shown = true }
 +        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { opened = true }
@@ -1241,7 +1286,7 @@ index 0000000..5b27369
 +        guard phase == .idle else { return }
 +        guard playable else { insert(); return }
 +        if reduceMotion {
-+            InsertSound.play(disc: game.isDisc); clicks += 1
++            InsertSound.play(disc: game.isDisc, cart64: game.isCart64); clicks += 1
 +            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { insert() }
 +            return
 +        }
@@ -1249,7 +1294,7 @@ index 0000000..5b27369
 +        withAnimation(.easeOut(duration: 0.18)) { phase = .lifted } completion: {
 +            withAnimation(.easeInOut(duration: 0.5)) { phase = .flying } completion: {
 +                withAnimation(.easeIn(duration: 0.14)) { phase = .inside } completion: {
-+                    InsertSound.play(disc: false)
++                    InsertSound.play(cart64: game.isCart64)
 +                    clicks += 1
 +                    // The slot flares, then the screen fades to black and the game starts in the dark.
 +                    withAnimation(.easeIn(duration: 0.6).delay(0.3)) { blackout = true } completion: { start() }
@@ -1283,10 +1328,14 @@ index 0000000..5b27369
 +    var body: some View {
 +        let glow = style.disc ? Color(red: 0.55, green: 0.75, blue: 1.0) : Color(red: 0.35, green: 0.65, blue: 1.0)
 +        // A disc goes into a slot-loading drive: a longer, thinner slit in a flat bezel, the disc mark beside it.
-+        let rim = style.disc ? CGSize(width: width * 1.25 + 46, height: 18) : CGSize(width: width + 18, height: 22)
-+        let slit = style.disc ? CGSize(width: width * 1.12, height: 3) : CGSize(width: width, height: 6)
++        // An N64 cartridge goes in at the top of the console: a wide, deep opening in a grey rim.
++        let rim = style.disc ? CGSize(width: width * 1.25 + 46, height: 18)
++            : style.cart64 ? CGSize(width: width + 26, height: 28) : CGSize(width: width + 18, height: 22)
++        let slit = style.disc ? CGSize(width: width * 1.12, height: 3)
++            : style.cart64 ? CGSize(width: width * 1.04, height: 10) : CGSize(width: width, height: 6)
 +        ZStack {
-+            Capsule().fill(LinearGradient(colors: style.disc ? [Color(white: 0.22), Color(white: 0.08)] : [Color(white: 0.28), Color(white: 0.12)],
++            Capsule().fill(LinearGradient(colors: style.disc ? [Color(white: 0.22), Color(white: 0.08)]
++                                          : style.cart64 ? [Color(white: 0.4), Color(white: 0.2)] : [Color(white: 0.28), Color(white: 0.12)],
 +                                          startPoint: .top, endPoint: .bottom))
 +                .frame(width: rim.width, height: rim.height)
 +                .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
@@ -1320,9 +1369,12 @@ index 0000000..5b27369
 +    var light: Color
 +    var dark: Color
 +    var disc: Bool
++    /// The grey of a Nintendo 64: its cartridge lies in the tray of a wide box.
++    var cart64 = false
 +    static let card = CaseStyle(light: caseRed, dark: caseRedDark, disc: false)
 +    static let discCase = CaseStyle(light: Color(white: 0.2), dark: Color(white: 0.06), disc: true)
-+    static func of(_ game: GameTile) -> CaseStyle { game.isDisc ? discCase : card }
++    static let cart64Case = CaseStyle(light: Color(white: 0.46), dark: Color(white: 0.24), disc: false, cart64: true)
++    static func of(_ game: GameTile) -> CaseStyle { game.isDisc ? discCase : game.isCart64 ? cart64Case : card }
 +}
 +extension EnvironmentValues { @Entry var caseStyle: CaseStyle = .card }
 +
@@ -1341,7 +1393,7 @@ index 0000000..5b27369
 +    }
 +
 +    var body: some View {
-+        let height = width / CoverFlowView.boxRatio
++        let height = width / CGFloat(game.boxRatio)
 +        let angle = progress * 180
 +        let edgeOn = sin(angle * .pi / 180)          // 0 flat, 1 edge-on to the player
 +        let inside = angle > 90
@@ -1378,7 +1430,7 @@ index 0000000..5b27369
 +    let height: CGFloat
 +    var body: some View {
 +        let shape = RoundedRectangle(cornerRadius: width * 0.035)
-+        ArtView(game: game)
++        ArtView(game: game, whole: game.webURL != nil)
 +            .frame(width: width, height: height)
 +            .clipShape(shape)
 +            .overlay(
@@ -1436,7 +1488,7 @@ index 0000000..5b27369
 +                    .foregroundStyle(.white)
 +                    .padding(.horizontal, band * 0.4)
 +                    .frame(maxWidth: .infinity, minHeight: band, maxHeight: band, alignment: .leading)
-+                    .background(style.disc ? Color(red: 0.12, green: 0.2, blue: 0.55) : caseRed)
++                    .background(style.disc ? Color(red: 0.12, green: 0.2, blue: 0.55) : style.cart64 ? Color(white: 0.22) : caseRed)
 +                ArtView(game: game, lettering: false)
 +                    .frame(width: bookletWidth, height: bookletHeight - band * 2)
 +                    .clipped()
@@ -1485,17 +1537,20 @@ index 0000000..5b27369
 +    static let cardShare: CGFloat = 0.3
 +    static let cardRatio: CGFloat = 1.42
 +    static let bottomShare: CGFloat = 0.09
-+    /// A disc fills most of its tray, in the middle, as in a DVD case.
-+    static func share(_ disc: Bool) -> CGFloat { disc ? 0.8 : cardShare }
-+    static func ratio(_ disc: Bool) -> CGFloat { disc ? 1 : cardRatio }
-+    static func bottom(_ disc: Bool, width: CGFloat, height: CGFloat) -> CGFloat {
-+        disc ? max(0.04, 0.5 - 0.55 * width * 0.8 / max(height, 1)) : bottomShare
++    /// A disc fills most of its tray, in the middle, as in a DVD case; an N64 cartridge, wider than tall, lies in the middle of
++    /// its wide box.
++    static func share(_ style: CaseStyle) -> CGFloat { style.disc ? 0.8 : style.cart64 ? 0.5 : cardShare }
++    static func ratio(_ style: CaseStyle) -> CGFloat { style.disc ? 1 : style.cart64 ? 0.72 : cardRatio }
++    static func bottom(_ style: CaseStyle, width: CGFloat, height: CGFloat) -> CGFloat {
++        if style.disc { return max(0.04, 0.5 - 0.55 * width * 0.8 / max(height, 1)) }
++        if style.cart64 { return max(0.06, 0.5 - 0.5 * width * share(style) * ratio(style) / max(height, 1)) }
++        return bottomShare
 +    }
 +    @Environment(\.caseStyle) private var style
 +    var body: some View {
 +        CasePlastic(width: width, height: height) {
-+            let cardWidth = width * Self.share(style.disc)
-+            let cardHeight = cardWidth * Self.ratio(style.disc)
++            let cardWidth = width * Self.share(style)
++            let cardHeight = cardWidth * Self.ratio(style)
 +            VStack(spacing: 0) {
 +                Spacer(minLength: 0)
 +                ZStack {
@@ -1503,6 +1558,10 @@ index 0000000..5b27369
 +                    if style.disc {
 +                        Circle().fill(style.dark.opacity(0.95)).frame(width: cardWidth * 1.06, height: cardWidth * 1.06)
 +                            .overlay(Circle().stroke(.black.opacity(0.35), lineWidth: 2))
++                    } else if style.cart64 {
++                        RoundedRectangle(cornerRadius: cardWidth * 0.08).fill(style.dark.opacity(0.95))
++                            .frame(width: cardWidth * 1.08, height: cardHeight * 1.1)
++                            .overlay(RoundedRectangle(cornerRadius: cardWidth * 0.08).stroke(.black.opacity(0.35), lineWidth: 2))
 +                    } else {
 +                        GameCardShape(notch: cardWidth * 0.14)
 +                            .fill(caseRedDark.opacity(0.95))
@@ -1517,7 +1576,7 @@ index 0000000..5b27369
 +                        .foregroundStyle(style.dark.opacity(0.9))
 +                        .offset(x: width * 0.12)
 +                }
-+                .padding(.bottom, height * Self.bottom(style.disc, width: width, height: height))
++                .padding(.bottom, height * Self.bottom(style, width: width, height: height))
 +            }
 +            .frame(width: width, height: height)
 +        }
@@ -1530,7 +1589,33 @@ index 0000000..5b27369
 +    let width: CGFloat
 +    let height: CGFloat
 +    var body: some View {
-+        if game.isDisc { GameDisc(game: game, diameter: width).frame(width: width, height: height) } else { card }
++        if game.isDisc { GameDisc(game: game, diameter: width).frame(width: width, height: height) }
++        else if game.isCart64 { cart64 } else { card }
++    }
++    /// An N64 cartridge: grey plastic wider than tall, the grip ridges along its top, the label with the box art in a
++    /// recess, the bottom corners well rounded.
++    @ViewBuilder private var cart64: some View {
++        let shell = UnevenRoundedRectangle(topLeadingRadius: width * 0.04, bottomLeadingRadius: width * 0.1,
++                                           bottomTrailingRadius: width * 0.1, topTrailingRadius: width * 0.04)
++        let label = RoundedRectangle(cornerRadius: width * 0.025)
++        ZStack(alignment: .top) {
++            shell.fill(LinearGradient(colors: [Color(white: 0.66), Color(white: 0.44)], startPoint: .top, endPoint: .bottom))
++            HStack(spacing: width * 0.028) {
++                ForEach(0..<16, id: \.self) { _ in
++                    Capsule().fill(Color(white: 0.38)).frame(width: max(1, width * 0.011), height: height * 0.09)
++                }
++            }
++            .padding(.top, height * 0.035)
++            ArtView(game: game, lettering: false)
++                .frame(width: width * 0.8, height: height * 0.62)
++                .clipShape(label)
++                .overlay(label.strokeBorder(.black.opacity(0.35), lineWidth: 1.5))
++                .overlay(LinearGradient(colors: [.white.opacity(0.18), .clear], startPoint: .top, endPoint: .center).clipShape(label))
++                .padding(.top, height * 0.17)
++        }
++        .frame(width: width, height: height)
++        .overlay(shell.stroke(.white.opacity(0.25), lineWidth: 1))
++        .shadow(color: .black.opacity(0.5), radius: width * 0.05, y: width * 0.025)
 +    }
 +    @ViewBuilder private var card: some View {
 +        let shape = GameCardShape(notch: width * 0.14)
@@ -1601,7 +1686,7 @@ index 0000000..5b27369
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameInfoPanel.swift b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
 new file mode 100644
-index 0000000..cd96a16
+index 0000000..93cb0e0
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
 @@ -0,0 +1,130 @@
@@ -1636,8 +1721,8 @@ index 0000000..cd96a16
 +                }
 +                .id("info.top")
 +                HStack(alignment: .center, spacing: 16) {
-+                    ArtView(game: game, lettering: false)
-+                        .frame(width: 70, height: 70 / CoverFlowView.boxRatio)
++                    ArtView(game: game, lettering: false, whole: game.webURL != nil)
++                        .frame(width: game.isCart64 ? 96 : 70, height: (game.isCart64 ? 96 : 70) / CGFloat(game.boxRatio))
 +                        .clipShape(RoundedRectangle(cornerRadius: 5))
 +                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.white.opacity(0.16)))
 +                        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
@@ -1902,10 +1987,10 @@ index 0000000..055f5bd
 +}
 diff --git a/frontend-ios/Sources/ShellUI/InsertSound.swift b/frontend-ios/Sources/ShellUI/InsertSound.swift
 new file mode 100644
-index 0000000..3a0b9ce
+index 0000000..4550465
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/InsertSound.swift
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,163 @@
 +import AVFoundation
 +import Foundation
 +
@@ -1915,14 +2000,20 @@ index 0000000..3a0b9ce
 +@MainActor enum InsertSound {
 +    private static var card: AVAudioPlayer?
 +    private static var disc: AVAudioPlayer?
++    private static var cart64: AVAudioPlayer?
 +
 +    /// Ready to play at once, so the sound lands with the animation.
-+    static func prepare(disc wantsDisc: Bool = false) {
++    static func prepare(disc wantsDisc: Bool = false, cart64 wantsCart64: Bool = false) {
 +        #if os(iOS)
 +        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
 +        try? AVAudioSession.sharedInstance().setActive(true)
 +        #endif
-+        if wantsDisc {
++        if wantsCart64 && !wantsDisc {
++            guard cart64 == nil else { return }
++            cart64 = try? AVAudioPlayer(data: wav(cart64Samples(rate: 44_100)))
++            cart64?.volume = 1.0
++            cart64?.prepareToPlay()
++        } else if wantsDisc {
 +            guard disc == nil else { return }
 +            // A recording the IPA carries beside the app (disc-insert.wav / .m4a / .mp3 / .caf, never in the repository) wins over
 +            // the made-up one
@@ -1938,11 +2029,11 @@ index 0000000..3a0b9ce
 +        }
 +    }
 +
-+    static func play(disc wantsDisc: Bool = false) {
-+        prepare(disc: wantsDisc)
-+        let player = wantsDisc ? disc : card
++    static func play(disc wantsDisc: Bool = false, cart64 wantsCart64: Bool = false) {
++        prepare(disc: wantsDisc, cart64: wantsCart64)
++        let player = wantsDisc ? disc : wantsCart64 ? cart64 : card
 +        player?.currentTime = 0
-+        player?.volume = wantsDisc ? 1.0 : 0.9
++        player?.volume = wantsDisc || wantsCart64 ? 1.0 : 0.9
 +        player?.play()
 +        // The disc's recording ends on a hard knock: it fades out over its last half second instead
 +        if wantsDisc, let player, player.duration > 0.8 {
@@ -1990,6 +2081,34 @@ index 0000000..3a0b9ce
 +                phaseWhine += 2 * .pi * (260 + 640 * u * u) / Double(rate)
 +                let env = Float(min(1, u * 4) * (1 - u))
 +                v += env * (0.10 * Float(sin(phaseWhine)) + 0.05 * Float(sin(phaseWhine * 1.5)) + 0.04 * low)
++            }
++            out[i] = max(-1, min(1, v))
++        }
++        return out
++    }
++
++    /// An N64 cartridge pushed into the console, about 0.3 s at `rate`: the plastic sliding down the guides, the edge connector
++    /// gripping it, then a dull low thunk as it seats; lower and softer than a Switch card's click.
++    static func cart64Samples(rate: Int) -> [Float] {
++        let count = Int(Double(rate) * 0.32)
++        var out = [Float](repeating: 0, count: count)
++        var seed: UInt32 = 0x6A09_E667
++        func noise() -> Float {
++            seed = seed &* 1_664_525 &+ 1_013_904_223
++            return Float(Int32(bitPattern: seed)) / Float(Int32.max)
++        }
++        var low: Float = 0, lower: Float = 0
++        for i in 0..<count {
++            let t = Double(i) / Double(rate)
++            var v: Float = 0
++            low += (noise() - low) * 0.12
++            lower += (low - lower) * 0.2
++            if t < 0.14 { v += lower * Float(min(1, t / 0.03)) * Float(1 - t / 0.14 * 0.4) * 1.6 }    // sliding down the guides
++            if t >= 0.12 && t < 0.18 { v += low * Float(sin(.pi * (t - 0.12) / 0.06)) * 0.5 }        // the connector's grip
++            if t >= 0.175 {                                                                          // seated: a dull thunk
++                let u = t - 0.175
++                v += Float(exp(-u / 0.035)) * (0.7 * Float(sin(2 * .pi * 120 * u)) + 0.25 * Float(sin(2 * .pi * 240 * u)))
++                v += Float(exp(-u / 0.004)) * 0.3 * Float(sin(2 * .pi * 800 * u))
 +            }
 +            out[i] = max(-1, min(1, v))
 +        }
@@ -2379,7 +2498,7 @@ index eb5e2ef..0eabd70 100644
      }
  }
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 2a2db87..c73b93c 100644
+index 2a2db87..bf69cf8 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -1,6 +1,126 @@
@@ -3279,7 +3398,7 @@ index 2a2db87..c73b93c 100644
      "Your games": {
        "localizations": {
          "en": {
-@@ -5936,6 +6664,286 @@
+@@ -5936,7 +6664,327 @@
            }
          }
        }
@@ -3563,9 +3682,52 @@ index 2a2db87..c73b93c 100644
 +          }
 +        }
 +      }
++    },
++    "Insert the cartridge": {
++      "localizations": {
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Modul einstecken"
++          }
++        },
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Insert the cartridge"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Insérer la cartouche"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Inserisci la cartuccia"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sätt i kassetten"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "插入卡带"
++          }
++        }
++      }
      }
    },
    "version": "1.0"
+-}
+\ No newline at end of file
++}
 diff --git a/frontend-ios/Sources/ShellUI/ShellArtwork.swift b/frontend-ios/Sources/ShellUI/ShellArtwork.swift
 index 13cc218..8ac1912 100644
 --- a/frontend-ios/Sources/ShellUI/ShellArtwork.swift
@@ -3626,7 +3788,7 @@ index 6c2c8d0..6d0d761 100644
      public static func metaLine(_ parts: String?...) -> String {
          parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
 diff --git a/frontend-ios/Sources/ShellUI/ShellInputs.swift b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-index 4533d0e..7ec5ea8 100644
+index 4533d0e..9798a31 100644
 --- a/frontend-ios/Sources/ShellUI/ShellInputs.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellInputs.swift
 @@ -24,8 +24,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
@@ -3662,7 +3824,7 @@ index 4533d0e..7ec5ea8 100644
          self.id = id
          self.title = title
          self.subtitle = subtitle
-@@ -33,6 +56,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -33,6 +56,35 @@ public struct GameTile: Identifiable, Equatable, Sendable {
          self.icon = icon
          self.state = state
          self.recentlyPlayed = recentlyPlayed
@@ -3677,7 +3839,11 @@ index 4533d0e..7ec5ea8 100644
 +    /// The platform of the games this app runs itself.
 +    public static let switchPlatform = "Switch"
 +    /// A disc rather than a card in the box: the platforms whose games came on discs.
-+    public var isDisc: Bool { webURL != nil && platform != Self.switchPlatform }
++    public var isDisc: Bool { webURL != nil && platform != Self.switchPlatform && !isCart64 }
++    /// A Nintendo 64 game: a grey cartridge, in a box wider than it is tall, going in at the top of the console.
++    public var isCart64: Bool { webURL != nil && platform == "N64" }
++    /// The box's width for a height of 1: a Switch case, a disc's case (a PS2 case, 135 x 190 mm), or the wide N64 box.
++    public var boxRatio: Double { isCart64 ? 1.43 : isDisc ? 0.71 : 0.62 }
 +}
 +
 +/// A game's play on this device, as the shell counts it: each Play is a launch, and a session lasts until the game was last
@@ -3694,7 +3860,7 @@ index 4533d0e..7ec5ea8 100644
      }
  }
  
-@@ -158,7 +206,9 @@ public enum InputDevice: Equatable, Sendable {
+@@ -158,7 +210,9 @@ public enum InputDevice: Equatable, Sendable {
  
  /// An optional event supplied by the host's input adapter. Increment sequence for repeated presses.
  public struct ShellInput: Equatable, Sendable {
@@ -3705,6 +3871,29 @@ index 4533d0e..7ec5ea8 100644
      public var sequence: Int
      public var action: Action
      public var device: InputDevice
+diff --git a/frontend-ios/Sources/ShellUI/ShellStyle.swift b/frontend-ios/Sources/ShellUI/ShellStyle.swift
+index 99ecd78..38efbb6 100644
+--- a/frontend-ios/Sources/ShellUI/ShellStyle.swift
++++ b/frontend-ios/Sources/ShellUI/ShellStyle.swift
+@@ -232,9 +232,17 @@ struct ArtView: View {
+     var backdrop = false
+     /// The placeholder's lettering. Off where the title is set beside the art already, as in the hero.
+     var lettering = true
++    /// The cover whole, at its own proportions, on black: another console's box (a PS2 case is wider than a Switch
++    /// case) keeps its logo and edges instead of being cropped to the Switch shape.
++    var whole = false
+     var body: some View {
+         Color.clear.overlay {
+-            if let banner = game.banner {
++            if let banner = game.banner, whole, !backdrop {
++                ZStack {
++                    Color.black
++                    Image(decorative: banner.image, scale: 1).resizable().interpolation(.high).scaledToFit()
++                }
++            } else if let banner = game.banner {
+                 Image(decorative: backdrop ? banner.thumbnail : banner.image, scale: 1)
+                     .resizable().interpolation(backdrop ? .medium : .high).scaledToFill()
+             } else if let icon = game.icon {
 diff --git a/frontend-ios/Sources/ShellUI/WebGameView.swift b/frontend-ios/Sources/ShellUI/WebGameView.swift
 new file mode 100644
 index 0000000..a9a8d00
@@ -4155,10 +4344,10 @@ index 1c29841..a647667 100644
          #expect(ShellFormat.version("") == "")
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..73b9454
+index 0000000..ad5a16f
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,185 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -4326,5 +4515,21 @@ index 0000000..73b9454
 +        sleep(2)
 +        XCTAssertFalse(app.buttons["web.close"].exists)
 +        shot("web-08-pad-exit")
++        // N64: the wide box, its grey cartridge and the slot at the top of the console.
++        launch(["--screen", "library", "--still", "--web64"])
++        XCTAssertTrue(app.buttons["platform.N64"].waitForExistence(timeout: 5))
++        app.buttons["platform.N64"].tap()
++        sleep(2)
++        shot("web-09-library-n64")
++        app.buttons["tile.kart"].firstMatch.tap()
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
++        sleep(1)
++        shot("web-10-box-n64")
++        app.buttons["box.cart"].tap()
++        for index in 1...3 {
++            usleep(220_000)
++            shot("web-11-cart-inserting-\(index)")
++        }
++        XCTAssertTrue(app.buttons["web.close"].waitForExistence(timeout: 10))
 +    }
 +}
