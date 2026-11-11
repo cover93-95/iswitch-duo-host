@@ -1539,18 +1539,21 @@ new file mode 100644
 index 0000000..01d2303
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/InsertSound.swift
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,64 @@
 +import AVFoundation
 +import Foundation
 +
 +/// The click of a game card going into the console: a short scrape, then the latch. Made here as samples (no sound file), so the
-+/// app carries no recording. Played through the default session, so the ring/silent switch mutes it like any app sound.
++/// app carries no recording. Played in the playback session, mixed with other audio, so the ring/silent switch does not mute it (as
++/// in the Nintendo Switch app: the player plays with the phone on silent).
 +@MainActor enum InsertSound {
 +    private static var player: AVAudioPlayer?
 +
 +    /// Ready to play at once, so the click lands with the animation.
 +    static func prepare() {
 +        guard player == nil else { return }
++        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
++        try? AVAudioSession.sharedInstance().setActive(true)
 +        player = try? AVAudioPlayer(data: wav(samples(rate: 44_100)))
 +        player?.volume = 0.9
 +        player?.prepareToPlay()
