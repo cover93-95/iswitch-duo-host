@@ -674,7 +674,7 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..598d4f3 100644
+index 8651917..9a1a6da 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -16,6 +16,11 @@ struct CoverFlowView: View, Equatable {
@@ -730,8 +730,12 @@ index 8651917..598d4f3 100644
                  .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                  topBar(short: short).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
                  if !short {
-@@ -79,11 +87,15 @@ struct CoverFlowView: View, Equatable {
+@@ -77,13 +85,19 @@ struct CoverFlowView: View, Equatable {
+             guard centredID != id, !userScrolling else { return }
+             withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = id }
          }
++        // Another platform's games: a new shelf or carousel, at rest, its chosen game in the middle
++        .onChange(of: platform) { _, _ in settled = true; userScrolling = false; centredID = selected.id }
      }
  
 -    /// The title and state under the card: two lines of title reserved, then the state line.
@@ -748,7 +752,7 @@ index 8651917..598d4f3 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -96,8 +108,9 @@ struct CoverFlowView: View, Equatable {
+@@ -96,8 +110,9 @@ struct CoverFlowView: View, Equatable {
              Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                  .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
              Spacer(minLength: 12)
@@ -760,7 +764,7 @@ index 8651917..598d4f3 100644
                  hints.opacity(showsHints ? 1 : 0)
                  Spacer(minLength: 12)
              }
-@@ -113,6 +126,11 @@ struct CoverFlowView: View, Equatable {
+@@ -113,6 +128,11 @@ struct CoverFlowView: View, Equatable {
          // title and chips, centred in it, would sink away from the top edge, so the row stops growing at xxLarge, as the
          // title under the card does.
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
@@ -772,7 +776,7 @@ index 8651917..598d4f3 100644
      }
      private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
      private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
-@@ -129,6 +147,7 @@ struct CoverFlowView: View, Equatable {
+@@ -129,6 +149,7 @@ struct CoverFlowView: View, Equatable {
                      // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
                      coverButton(detail, cover: cover)
                          .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
@@ -780,7 +784,7 @@ index 8651917..598d4f3 100644
                          .id(detail.id)
                  }
              }.scrollTargetLayout()
-@@ -163,6 +182,33 @@ struct CoverFlowView: View, Equatable {
+@@ -163,6 +184,33 @@ struct CoverFlowView: View, Equatable {
          }
          .scrollIndicators(.hidden)
          .scrollClipDisabled()
@@ -814,7 +818,17 @@ index 8651917..598d4f3 100644
      }
  
      /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
-@@ -196,9 +242,7 @@ struct CoverFlowView: View, Equatable {
+@@ -190,20 +238,21 @@ struct CoverFlowView: View, Equatable {
+             // comes to the middle and never starts anything.
+             if longPressed { longPressed = false; return }
+             if chosen {
+-                if settled { primary(detail) }
++                // The shelf of one to three games never scrolls: only the carousel waits to settle. Switching platforms swaps
++                // the carousel for the shelf while it may still be moving, and its `settled` stayed false: a tap on the only
++                // PS2 game did nothing
++                if settled || games.count <= 3 { primary(detail) }
+                 return
+             }
              withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = detail.id }
              select(detail.id)
          } label: {
@@ -825,7 +839,13 @@ index 8651917..598d4f3 100644
          }
          .buttonStyle(.plain)
          // A long press on the centred card opens its settings, a shortcut for the button at the top.
-@@ -238,6 +282,7 @@ struct CoverFlowView: View, Equatable {
+         .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+-            guard chosen, settled else { return }
++            guard chosen, settled || games.count <= 3 else { return }
+             longPressed = true
+             openSettings()
+         })
+@@ -238,6 +287,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -833,7 +853,7 @@ index 8651917..598d4f3 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,9 +291,24 @@ struct CoverFlowView: View, Equatable {
+@@ -246,9 +296,24 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -859,7 +879,7 @@ index 8651917..598d4f3 100644
              GlyphHint(role: .settings, label: ShellStrings.text("Game settings"))
              GlyphHint(role: .controllers, label: ShellStrings.text("Controllers"))
          }
-@@ -257,6 +317,64 @@ struct CoverFlowView: View, Equatable {
+@@ -257,6 +322,64 @@ struct CoverFlowView: View, Equatable {
      }
  }
  
@@ -924,7 +944,7 @@ index 8651917..598d4f3 100644
  /// The way out for a game that cannot start, as one small tappable line in the state's colour: "How to fix ›".
  /// VoiceOver reads the state with it.
  struct StateAction: View {
-@@ -352,25 +470,52 @@ private struct FlowTilt: ViewModifier {
+@@ -352,25 +475,52 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -988,7 +1008,7 @@ index 8651917..598d4f3 100644
          }
          .animation(reduceMotion ? .linear(duration: 0.2) : .easeInOut(duration: 0.45), value: game.id)
          .ignoresSafeArea()
-@@ -407,3 +552,45 @@ struct ShellSettingsChip: View {
+@@ -407,3 +557,45 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
@@ -1036,7 +1056,7 @@ index 8651917..598d4f3 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..2dfa84a
+index 0000000..e039037
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 @@ -0,0 +1,515 @@
@@ -1109,7 +1129,7 @@ index 0000000..2dfa84a
 +                        .buttonStyle(.plain)
 +                        .frame(width: card.width * 1.1, height: card.height * 1.1)
 +                        .position(inTray)
-+                        .accessibilityLabel(ShellStrings.text("Insert the game card") + ", " + game.title)
++                        .accessibilityLabel(ShellStrings.text(game.isDisc ? "Insert the disc" : "Insert the game card") + ", " + game.title)
 +                        .accessibilityIdentifier("box.cart")
 +                        .shellTarget("box.cart", radius: card.width * 0.06, action: play)
 +                        .transition(.opacity)
@@ -1153,7 +1173,7 @@ index 0000000..2dfa84a
 +                    Spacer(minLength: 0)
 +                    HStack(spacing: 20) {
 +                        if opened && playable {
-+                            GlyphHint(role: .activate, label: ShellStrings.text("Insert the game card"))
++                            GlyphHint(role: .activate, label: ShellStrings.text(game.isDisc ? "Insert the disc" : "Insert the game card"))
 +                        }
 +                        Button(action: toggle) {
 +                            Label(opened ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"),
@@ -2326,7 +2346,7 @@ index eb5e2ef..0eabd70 100644
      }
  }
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 2a2db87..6c94c86 100644
+index 2a2db87..c73b93c 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -1,6 +1,126 @@
@@ -3226,7 +3246,7 @@ index 2a2db87..6c94c86 100644
      "Your games": {
        "localizations": {
          "en": {
-@@ -5936,6 +6664,246 @@
+@@ -5936,6 +6664,286 @@
            }
          }
        }
@@ -3467,6 +3487,46 @@ index 2a2db87..6c94c86 100644
 +          "stringUnit": {
 +            "state": "translated",
 +            "value": "游戏页面未能加载。"
++          }
++        }
++      }
++    },
++    "Insert the disc": {
++      "localizations": {
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Disc einlegen"
++          }
++        },
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Insert the disc"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Insérer le disque"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Inserisci il disco"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Sätt i skivan"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "插入光盘"
 +          }
 +        }
 +      }
@@ -4023,10 +4083,10 @@ index 1c29841..a647667 100644
          #expect(ShellFormat.version("") == "")
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..960ba03
+index 0000000..73b9454
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,169 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -4162,7 +4222,8 @@ index 0000000..960ba03
 +        app.buttons["platform.PS2"].tap()
 +        sleep(2)
 +        shot("web-02-library-ps2")
-+        app.buttons["qa.input.activate"].tap()   // A on the only PS2 game opens its box
++        // A tap on the only PS2 game opens its box (it did nothing on the iPhone: the shelf waited for the carousel to settle)
++        app.buttons["tile.street"].firstMatch.tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        shot("web-03-box-disc")
