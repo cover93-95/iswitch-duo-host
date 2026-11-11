@@ -285,7 +285,7 @@ index 0000000..4ac066c
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellHost/ShellHostModel.swift b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
-index 02898cb..906c001 100644
+index 02898cb..8a1ae31 100644
 --- a/frontend-ios/Sources/ShellHost/ShellHostModel.swift
 +++ b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
 @@ -19,11 +19,13 @@ public struct ShellHostConfig: Sendable {
@@ -404,15 +404,18 @@ index 02898cb..906c001 100644
      private func image(_ url: URL?) -> Artwork? {
          guard let url else { return nil }
          if let a = artwork[url] { return a }
-@@ -217,13 +256,22 @@ public struct ShellHostConfig: Sendable {
+@@ -217,13 +256,25 @@ public struct ShellHostConfig: Sendable {
          return a
      }
  
 +    /// A browser game's tile: always playable (the page is the game), its pictures as a Switch game's.
 +    private func webDetail(for entry: WebGameEntry) -> GameDetail {
-+        GameDetail(game: GameTile(id: entry.id, title: entry.title, subtitle: entry.subtitle, banner: image(entry.bannerURL),
-+                                  backdrop: backdropImage(entry.backdropURL), ambience: Ambience(text: entry.ambienceText),
-+                                  screens: entry.screenURLs, synopsis: entry.synopsis ?? "", platform: entry.platform, webURL: entry.url))
++        var tile = GameTile(id: entry.id, title: entry.title, subtitle: entry.subtitle, banner: image(entry.bannerURL),
++                            backdrop: backdropImage(entry.backdropURL), ambience: Ambience(text: entry.ambienceText),
++                            screens: entry.screenURLs, synopsis: entry.synopsis ?? "", platform: entry.platform, webURL: entry.url)
++        tile.webStart = entry.start
++        tile.webFocus = entry.focus
++        return GameDetail(game: tile)
 +    }
 +
      private func detail(for entry: CatalogueEntry) -> GameDetail {
@@ -428,7 +431,7 @@ index 02898cb..906c001 100644
          guard let profile = entry.profile, entry.problem == nil else {
              return GameDetail(game: tile, dataNote: dataNote(data, found: false))
          }
-@@ -454,12 +502,30 @@ public struct ShellHostConfig: Sendable {
+@@ -454,12 +505,30 @@ public struct ShellHostConfig: Sendable {
          }
          // Remembered when Play is triggered, even if the launcher then fails (the stub). The order changes at the next load.
          LastPlayedStore(defaults: config.defaults(id)).record(config.now())
@@ -462,10 +465,10 @@ index 02898cb..906c001 100644
      /// A game's values for the engine: its own choices, then the shell's defaults. A game whose settings list has no
 diff --git a/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift b/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift
 new file mode 100644
-index 0000000..c810679
+index 0000000..31e7a4b
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,47 @@
 +import Foundation
 +
 +/// A game played in the browser, from the app's `WebGames/<id>/` folder: `game.json` with the page's address, the title and
@@ -482,10 +485,13 @@ index 0000000..c810679
 +    public var ambienceText: String?
 +    public var screenURLs: [URL] = []
 +    public var synopsis: String?
++    /// game.json's "start" (the page's buttons pressed in order once it has loaded) and "focus" (the element made to fill the screen)
++    public var start: [String] = []
++    public var focus: String?
 +}
 +
 +public enum WebGameCatalogue {
-+    struct Manifest: Decodable { var title: String; var platform: String; var url: String; var subtitle: String? }
++    struct Manifest: Decodable { var title: String; var platform: String; var url: String; var subtitle: String?; var start: [String]?; var focus: String? }
 +
 +    /// The web games under `root`, in folder-name order. A folder without a readable game.json or an https address is skipped.
 +    public static func scan(root: URL?, fileManager fm: FileManager = .default) -> [WebGameEntry] {
@@ -505,6 +511,8 @@ index 0000000..c810679
 +        entry.ambienceText = fm.contents(atPath: dir.appendingPathComponent("ambience.txt").path).flatMap { String(data: $0.prefix(64), encoding: .utf8) }
 +        entry.screenURLs = GameCatalogue.screens(in: dir, fm)
 +        entry.synopsis = GameCatalogue.synopsis(in: dir, fm)
++        entry.start = m.start ?? []
++        entry.focus = m.focus.flatMap { $0.isEmpty ? nil : $0 }
 +        return entry
 +    }
 +}
@@ -3618,10 +3626,10 @@ index 6c2c8d0..6d0d761 100644
      public static func metaLine(_ parts: String?...) -> String {
          parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
 diff --git a/frontend-ios/Sources/ShellUI/ShellInputs.swift b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-index 4533d0e..167f4bd 100644
+index 4533d0e..7ec5ea8 100644
 --- a/frontend-ios/Sources/ShellUI/ShellInputs.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-@@ -24,8 +24,27 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -24,8 +24,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
      public var state: GameState
      /// Already localized, such as "Played today". Nil leaves the game out of Recently played.
      public var recentlyPlayed: String?
@@ -3642,6 +3650,10 @@ index 4533d0e..167f4bd 100644
 +    public var platform: String
 +    /// A game played in the browser: the page the player opens in full screen inside the app, instead of the engine.
 +    public var webURL: URL?
++    /// The page's own buttons pressed for the player once it has loaded, in order (CSS selectors, such as Play then Full
++    /// screen), and an element made to fill the screen (a page that keeps its game in a frame of its own).
++    public var webStart: [String] = []
++    public var webFocus: String?
      public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
 -                state: GameState = .playable, recentlyPlayed: String? = nil) {
 +                state: GameState = .playable, recentlyPlayed: String? = nil, stats: PlayStats = PlayStats(), backdrop: Artwork? = nil,
@@ -3650,7 +3662,7 @@ index 4533d0e..167f4bd 100644
          self.id = id
          self.title = title
          self.subtitle = subtitle
-@@ -33,6 +52,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -33,6 +56,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
          self.icon = icon
          self.state = state
          self.recentlyPlayed = recentlyPlayed
@@ -3682,7 +3694,7 @@ index 4533d0e..167f4bd 100644
      }
  }
  
-@@ -158,7 +202,9 @@ public enum InputDevice: Equatable, Sendable {
+@@ -158,7 +206,9 @@ public enum InputDevice: Equatable, Sendable {
  
  /// An optional event supplied by the host's input adapter. Increment sequence for repeated presses.
  public struct ShellInput: Equatable, Sendable {
@@ -3695,10 +3707,10 @@ index 4533d0e..167f4bd 100644
      public var device: InputDevice
 diff --git a/frontend-ios/Sources/ShellUI/WebGameView.swift b/frontend-ios/Sources/ShellUI/WebGameView.swift
 new file mode 100644
-index 0000000..9efeaf2
+index 0000000..a9a8d00
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/WebGameView.swift
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,188 @@
 +import SwiftUI
 +import WebKit
 +
@@ -3717,7 +3729,7 @@ index 0000000..9efeaf2
 +        ZStack(alignment: .topLeading) {
 +            Color.black.ignoresSafeArea()
 +            if let url = game.webURL {
-+                WebGameSurface(url: url, loading: $loading, failure: $failure)
++                WebGameSurface(url: url, start: game.webStart, focus: game.webFocus, loading: $loading, failure: $failure)
 +                    .ignoresSafeArea()
 +                    .accessibilityLabel(game.title)
 +            }
@@ -3772,9 +3784,39 @@ index 0000000..9efeaf2
 +@MainActor
 +final class WebGameCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
 +    let home: URL
++    let start: [String]
++    let focus: String?
 +    var loading: Binding<Bool>
 +    var failure: Binding<String?>
-+    init(home: URL, loading: Binding<Bool>, failure: Binding<String?>) { self.home = home; self.loading = loading; self.failure = failure }
++    init(home: URL, start: [String] = [], focus: String? = nil, loading: Binding<Bool>, failure: Binding<String?>) {
++        self.home = home; self.start = start; self.focus = focus; self.loading = loading; self.failure = failure
++    }
++    /// The page started for the player: its buttons pressed in order as each appears (Play, then Full screen), and the element
++    /// to fill the screen styled over everything. Runs in the main frame once the document is parsed, and gives up after a minute.
++    var startScript: WKUserScript? {
++        guard !start.isEmpty || focus != nil,
++              let steps = try? JSONSerialization.data(withJSONObject: start), let stepsJSON = String(data: steps, encoding: .utf8),
++              let focusData = try? JSONSerialization.data(withJSONObject: [focus ?? ""]), let focusJSON = String(data: focusData, encoding: .utf8)
++        else { return nil }
++        let source = """
++        (function(){
++          var steps = \(stepsJSON), focus = \(focusJSON)[0];
++          if (focus) {
++            var s = document.createElement('style');
++            s.textContent = focus + '{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;aspect-ratio:auto!important;margin:0!important;border:0!important;border-radius:0!important;z-index:2147483646!important;background:#000!important}html,body{overflow:hidden!important;background:#000!important}';
++            (document.head || document.documentElement).appendChild(s);
++          }
++          var i = 0, tries = 0;
++          var t = setInterval(function(){
++            if (i >= steps.length || ++tries > 120) { clearInterval(t); return; }
++            if (tries < 4) return;   // the page's own scripts attach their handlers first
++            var el = document.querySelector(steps[i]);
++            if (el && !el.disabled && el.getClientRects().length > 0) { el.click(); i++; tries = 2; }   // a pause before the next one
++          }, 500);
++        })();
++        """
++        return WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
++    }
 +
 +    func load(into web: WKWebView) {
 +        let request = URLRequest(url: home)
@@ -3816,6 +3858,7 @@ index 0000000..9efeaf2
 +        #endif
 +        config.mediaTypesRequiringUserActionForPlayback = []
 +        config.preferences.javaScriptCanOpenWindowsAutomatically = false
++        if let script = coordinator.startScript { config.userContentController.addUserScript(script) }
 +        let web = WKWebView(frame: .zero, configuration: config)
 +        web.navigationDelegate = coordinator
 +        web.uiDelegate = coordinator
@@ -3835,9 +3878,11 @@ index 0000000..9efeaf2
 +#if os(iOS)
 +struct WebGameSurface: UIViewRepresentable {
 +    let url: URL
++    var start: [String] = []
++    var focus: String?
 +    @Binding var loading: Bool
 +    @Binding var failure: String?
-+    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, loading: $loading, failure: $failure) }
++    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, start: start, focus: focus, loading: $loading, failure: $failure) }
 +    func makeUIView(context: Context) -> WKWebView { WebGameCoordinator.makeWebView(coordinator: context.coordinator) }
 +    func updateUIView(_ view: WKWebView, context: Context) {}
 +    static func dismantleUIView(_ view: WKWebView, coordinator: WebGameCoordinator) { view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
@@ -3845,9 +3890,11 @@ index 0000000..9efeaf2
 +#else
 +struct WebGameSurface: NSViewRepresentable {
 +    let url: URL
++    var start: [String] = []
++    var focus: String?
 +    @Binding var loading: Bool
 +    @Binding var failure: String?
-+    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, loading: $loading, failure: $failure) }
++    func makeCoordinator() -> WebGameCoordinator { WebGameCoordinator(home: url, start: start, focus: focus, loading: $loading, failure: $failure) }
 +    func makeNSView(context: Context) -> WKWebView { WebGameCoordinator.makeWebView(coordinator: context.coordinator) }
 +    func updateNSView(_ view: WKWebView, context: Context) {}
 +}
