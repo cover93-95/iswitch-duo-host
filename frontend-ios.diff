@@ -1028,22 +1028,28 @@ index 0000000..4fe29ec
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CartridgeConsoleView.swift b/frontend-ios/Sources/ShellUI/CartridgeConsoleView.swift
 new file mode 100644
-index 0000000..7664d86
+index 0000000..a95b91f
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/CartridgeConsoleView.swift
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,284 @@
 +import SwiftUI
 +
 +/// An N64 game, opened from the library: no box, the cartridge itself above a console drawn on screen. Playing is pushing it
 +/// in: a tap on the cartridge (or A, the cartridge being the focus) lifts it a little, brings it over the slot on top of the console
 +/// and pushes it down into it, its top still showing as a cartridge does, with the click and a knock of the haptics; the slot
-+/// lights, the game's loading screen fades in and the game starts. A tap beside it, B or Close leaves; Game info opens the panel.
++/// lights, the game's loading screen fades in and the game starts. A drag across the cartridge (or View) turns it over to the back
++/// of the game's box. A tap beside it, B or Close leaves; Game info opens the panel.
 +struct CartridgeConsoleView: View {
 +    let game: GameTile
 +    let insert: () -> Void
 +    let showInfo: () -> Void
 +    let close: () -> Void
 +    var autoInsert = false
++    /// Counts the presses of View: each turns the cartridge over.
++    var turnRequest = 0
++    @State private var turn: Double = 0
++    @State private var turnStart: Double?
++    @State private var backCover: Artwork?
 +    @State private var shown = false
 +    @State private var phase = Phase.idle
 +    @State private var clicks = 0
@@ -1077,7 +1083,8 @@ index 0000000..7664d86
 +                    .opacity(shown ? 1 : 0)
 +                    .accessibilityHidden(true)
 +                // The cartridge, cut at the slot's line: what goes below it is inside the console.
-+                GameCard(game: game, width: layout.cart.width, height: layout.cart.height)
++                TurnedBox(angle: turn, front: GameCard(game: game, width: layout.cart.width, height: layout.cart.height),
++                          back: BoxBackFace(game: game, picture: backCover, width: layout.cart.width, height: layout.cart.height))
 +                    .scaleEffect(phase == .lifted ? 1.05 : 1)
 +                    .rotationEffect(.degrees(phase == .lifted ? -2 : 0))
 +                    .shadow(color: .black.opacity(0.45), radius: phase == .lifted ? 26 : 12, y: phase == .lifted ? 16 : 8)
@@ -1095,7 +1102,22 @@ index 0000000..7664d86
 +                        .position(x: size.width / 2, y: cartCentre(layout))
 +                        .accessibilityLabel(ShellStrings.text("Insert the cartridge") + ", " + game.title)
 +                        .accessibilityIdentifier("box.cart")
++                        .accessibilityAction(named: ShellStrings.text("Turn the box")) { turnOver() }
 +                        .shellTarget("box.cart", radius: layout.cart.width * 0.06, action: play)
++                        // A drag across it turns it over, following the finger; a tap puts it in.
++                        .highPriorityGesture(DragGesture(minimumDistance: 12)
++                            .onChanged { drag in
++                                let start = turnStart ?? turn
++                                if turnStart == nil { turnStart = turn }
++                                turn = start + BoxTurn.angle(drag: drag.translation.width, width: layout.cart.width)
++                            }
++                            .onEnded { drag in
++                                guard let start = turnStart else { return }
++                                turnStart = nil
++                                let end = BoxTurn.settle(start: start, predicted: start + BoxTurn.angle(drag: drag.predictedEndTranslation.width, width: layout.cart.width))
++                                if end != start { NavSound.tick() }
++                                withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.15)) { turn = end }
++                            })
 +                        .transition(.opacity)
 +                }
 +                VStack(spacing: 0) {
@@ -1113,6 +1135,7 @@ index 0000000..7664d86
 +                    Spacer(minLength: 0)
 +                    HStack(spacing: 20) {
 +                        if playable { GlyphHint(role: .activate, label: ShellStrings.text("Insert the cartridge")) }
++                        GlyphHint(role: .turn, label: ShellStrings.text("Turn the box"))
 +                        Button(action: showInfo) { Label(ShellStrings.text("Game info"), systemImage: "info.circle") }
 +                            .buttonStyle(ChipButtonStyle())
 +                            .accessibilityIdentifier("box.info")
@@ -1132,6 +1155,14 @@ index 0000000..7664d86
 +        }
 +        .sensoryFeedback(.impact(weight: .heavy, intensity: 1), trigger: clicks)
 +        .onAppear(perform: present)
++        .task { backCover = await BackCovers.load(game.back) }
++        .onChange(of: turnRequest) { _, _ in turnOver() }
++    }
++    /// View: the cartridge turns over in one go.
++    private func turnOver() {
++        guard phase == .idle else { return }
++        NavSound.tick()
++        withAnimation(reduceMotion ? nil : .spring(duration: 0.6, bounce: 0.12)) { turn = BoxTurn.next(from: turn) }
 +    }
 +
 +    /// Where the console and the cartridge sit: the console low in the middle, the cartridge floating above its slot, the whole
@@ -1195,7 +1226,7 @@ index 0000000..7664d86
 +            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { start() }
 +            return
 +        }
-+        withAnimation(.easeOut(duration: 0.2)) { phase = .lifted } completion: {
++        withAnimation(.easeOut(duration: 0.2)) { phase = .lifted; turn = (turn / 360).rounded() * 360 } completion: {
 +            withAnimation(.easeInOut(duration: 0.4)) { phase = .aligned } completion: {
 +                withAnimation(.easeIn(duration: 0.16)) { phase = .inside } completion: {
 +                    InsertSound.play(cart64: true)
@@ -1286,10 +1317,10 @@ index 0000000..7664d86
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..f804056 100644
+index 8651917..5da2538 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-@@ -16,6 +16,23 @@ struct CoverFlowView: View, Equatable {
+@@ -16,6 +16,21 @@ struct CoverFlowView: View, Equatable {
      let openSettings: () -> Void
      let openControllers: () -> Void
      let openShellSettings: () -> Void
@@ -1301,8 +1332,6 @@ index 8651917..f804056 100644
 +    /// The way the last change of console went: 1 to the next (RB), -1 to the previous (LB). The boxes of the old console slide
 +    /// out on that side and the new ones come in from the other.
 +    var platformStep = 1
-+    /// Counts the presses of the turn button (View): each one turns the chosen box over, to its back or to its front again.
-+    var turnRequest = 0
 +    /// The showcase after a while without input: the bar at the top and the hints fade out, the boxes alone go by.
 +    var showcase = false
 +    /// The card in the middle while the player scrolls, before it becomes the selection (nil once the scroll has settled):
@@ -1313,29 +1342,16 @@ index 8651917..f804056 100644
      @State private var centredID: String?
      /// How far the carousel is scrolled: 0 with the first card in the middle.
      @State private var scrolled: CGFloat = 0
-@@ -27,6 +44,12 @@ struct CoverFlowView: View, Equatable {
-     @State private var settled = true
-     /// A long press on the centre card opened settings: the touch that ends it must not also play.
-     @State private var longPressed = false
-+    /// The chosen box's turn, in degrees: 0 its front, 180 its back (see BoxTurn). Back to the front with every new selection.
-+    @State private var turn: Double = 0
-+    /// Where the turn stood when the finger came down on the box.
-+    @State private var turnStart: Double?
-+    /// The chosen game's back cover, once decoded.
-+    @State private var backCover: Artwork?
-     @Environment(\.accessibilityReduceMotion) private var reduceMotion
- 
-     /// Re-render only for what is drawn: the games' tiles, the selection and the hints. Settings changes elsewhere do
-@@ -34,6 +57,8 @@ struct CoverFlowView: View, Equatable {
+@@ -34,6 +49,8 @@ struct CoverFlowView: View, Equatable {
      nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
          lhs.games.map(\.game) == rhs.games.map(\.game) && lhs.selected.game == rhs.selected.game
              && lhs.controllers == rhs.controllers && lhs.showsHints == rhs.showsHints && lhs.screenInsets == rhs.screenInsets
 +            && lhs.platforms == rhs.platforms && lhs.platform == rhs.platform && lhs.platformStep == rhs.platformStep
-+            && lhs.turnRequest == rhs.turnRequest && lhs.showcase == rhs.showcase
++            && lhs.showcase == rhs.showcase
      }
  
      var body: some View {
-@@ -43,47 +68,137 @@ struct CoverFlowView: View, Equatable {
+@@ -43,47 +60,78 @@ struct CoverFlowView: View, Equatable {
              // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
              // bottom edge, and never so wide that the neighbours vanish.
              let height = geometry.size.height
@@ -1366,9 +1382,6 @@ index 8651917..f804056 100644
 +                    .id(platform)
 +                    .transition(platformSlide(width: geometry.size.width))
 +                    .frame(height: cardHeight * 1.06)
-+                    // The chosen box takes the finger itself: a drag on it turns it over, a tap opens it, a long press opens
-+                    // its settings. The carousel scrolls from beside it.
-+                    .overlay { if !showcase { turnPad(width: geometry.size.width, cover: cover, ratio: ratio) } }
                      info(short: short, width: geometry.size.width)
 -                        .padding(.top, gap).padding(.horizontal, 24)
 +                        .padding(.top, gap + cardHeight * Self.reflection).padding(.horizontal, 24)
@@ -1395,13 +1408,6 @@ index 8651917..f804056 100644
 +        .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: platform) { _, _ in !showcase }
 +        .animation(.easeInOut(duration: 0.8), value: showcase)
          .onAppear { centredID = selected.id }
-+        // A new box comes to the middle with its front toward the player; its back cover is read while it is chosen.
-+        .task(id: selected.id) {
-+            turn = 0
-+            backCover = nil
-+            backCover = await BackCovers.load(selected.game.back)
-+        }
-+        .onChange(of: turnRequest) { _, _ in turnOver() }
 +        // A scroll cut short (a game opened, the layout changed) leaves no card previewed behind it.
 +        .onDisappear { if previewed != nil { previewed = nil; preview(nil) } }
          .onChange(of: selected.id) { _, id in
@@ -1412,55 +1418,6 @@ index 8651917..f804056 100644
          }
 +        // Another platform's games: a new shelf or carousel, at rest, its chosen game in the middle
 +        .onChange(of: platform) { _, _ in settled = true; userScrolling = false; scrolled = 0; centredID = selected.id }
-+    }
-+
-+    /// One press of the turn button: the box turns over in one go, always the same way round.
-+    private func turnOver() {
-+        let target = BoxTurn.next(from: turn)
-+        NavSound.tick()
-+        withAnimation(reduceMotion ? nil : .spring(duration: 0.6, bounce: 0.12)) { turn = target }
-+    }
-+
-+    /// Over the chosen box: a drag turns it over and it follows the finger, settling on a face when let go; a tap opens it (the
-+    /// game's action), a long press its settings. Beside it, the carousel scrolls and taps bring the neighbours.
-+    private func turnPad(width: CGFloat, cover: CGFloat, ratio: CGFloat) -> some View {
-+        let shelf = games.count <= 3
-+        let card = shelf ? min(cover, width / (1 + CGFloat(games.count - 1) * 0.8)) : cover
-+        let x = shelf ? (CGFloat(selectedIndex) - CGFloat(games.count - 1) / 2) * card * 0.78 : 0
-+        return Color.clear
-+            .contentShape(Rectangle())
-+            .frame(width: card, height: card / ratio)
-+            .offset(x: x)
-+            .gesture(DragGesture(minimumDistance: 12)
-+                .onChanged { drag in
-+                    guard shelf || !userScrolling else { return }
-+                    let start = turnStart ?? turn
-+                    if turnStart == nil { turnStart = turn }
-+                    turn = start + BoxTurn.angle(drag: drag.translation.width, width: card)
-+                }
-+                .onEnded { drag in
-+                    guard let start = turnStart else { return }
-+                    turnStart = nil
-+                    let end = BoxTurn.settle(start: start, predicted: start + BoxTurn.angle(drag: drag.predictedEndTranslation.width, width: card))
-+                    if end != start { NavSound.tick() }
-+                    select(selected.id)   // a touch: the library notes it (touch mode, the showcase's clock), nothing else
-+                    withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.15)) { turn = end }
-+                })
-+            .onTapGesture {
-+                if longPressed { longPressed = false; return }
-+                guard shelf || !userScrolling else { return }
-+                if shelf { primary(selected); return }
-+                let stride = cover * 1.04
-+                let centred = min(games.count - 1, max(0, Int((scrolled / stride).rounded())))
-+                if games[centred].id != selected.id { select(games[centred].id) }
-+                primary(games[centred])
-+            }
-+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-+                guard shelf || settled else { return }
-+                longPressed = true
-+                openSettings()
-+            })
-+            .accessibilityHidden(true)
      }
  
 -    /// The title and state under the card: two lines of title reserved, then the state line.
@@ -1487,7 +1444,7 @@ index 8651917..f804056 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -96,8 +211,9 @@ struct CoverFlowView: View, Equatable {
+@@ -96,8 +144,9 @@ struct CoverFlowView: View, Equatable {
              Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                  .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
              Spacer(minLength: 12)
@@ -1499,7 +1456,7 @@ index 8651917..f804056 100644
                  hints.opacity(showsHints ? 1 : 0)
                  Spacer(minLength: 12)
              }
-@@ -113,6 +229,11 @@ struct CoverFlowView: View, Equatable {
+@@ -113,6 +162,11 @@ struct CoverFlowView: View, Equatable {
          // title and chips, centred in it, would sink away from the top edge, so the row stops growing at xxLarge, as the
          // title under the card does.
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
@@ -1511,7 +1468,7 @@ index 8651917..f804056 100644
      }
      private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
      private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
-@@ -129,6 +250,7 @@ struct CoverFlowView: View, Equatable {
+@@ -129,6 +183,7 @@ struct CoverFlowView: View, Equatable {
                      // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
                      coverButton(detail, cover: cover)
                          .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
@@ -1519,7 +1476,7 @@ index 8651917..f804056 100644
                          .id(detail.id)
                  }
              }.scrollTargetLayout()
-@@ -138,6 +260,11 @@ struct CoverFlowView: View, Equatable {
+@@ -138,6 +193,11 @@ struct CoverFlowView: View, Equatable {
          .contentMargins(.horizontal, margin, for: .scrollContent)
          .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x + $0.contentInsets.leading } action: { _, offset in
              scrolled = offset
@@ -1531,7 +1488,7 @@ index 8651917..f804056 100644
          }
          .onScrollPhaseChange { old, phase, context in
              // A touch scroll goes interacting, decelerating, maybe animating (the snap), then idle. Only once it has
-@@ -158,11 +285,39 @@ struct CoverFlowView: View, Equatable {
+@@ -158,11 +218,39 @@ struct CoverFlowView: View, Equatable {
                      if games[index].id != selected.id { select(games[index].id) }
                  }
                  userScrolling = false
@@ -1571,7 +1528,7 @@ index 8651917..f804056 100644
      }
  
      /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
-@@ -190,20 +345,21 @@ struct CoverFlowView: View, Equatable {
+@@ -190,20 +278,21 @@ struct CoverFlowView: View, Equatable {
              // comes to the middle and never starts anything.
              if longPressed { longPressed = false; return }
              if chosen {
@@ -1588,7 +1545,7 @@ index 8651917..f804056 100644
 -            CoverView(game: detail.game, radius: cover * 0.03, showsState: true)
 -                .frame(width: cover, height: cover * 9 / 16)
 -                .shadow(color: .black.opacity(0.5), radius: cover * 0.05, y: cover * 0.03)
-+            BoxCover(game: detail.game, chosen: chosen, width: cover, turn: chosen ? turn : 0, back: chosen ? backCover : nil)
++            BoxCover(game: detail.game, chosen: chosen, width: cover)
          }
          .buttonStyle(.plain)
          // A long press on the centred card opens its settings, a shortcut for the button at the top.
@@ -1598,15 +1555,7 @@ index 8651917..f804056 100644
              longPressed = true
              openSettings()
          })
-@@ -212,6 +368,7 @@ struct CoverFlowView: View, Equatable {
-         .accessibilityLabel(detail.game.title + ", " + detail.game.state.title)
-         .accessibilityAddTraits(chosen ? .isSelected : [])
-         .accessibilityHint(chosen ? detail.game.state.actionTitle : ShellStrings.text("Double-tap to select"))
-+        .accessibilityAction(named: ShellStrings.text("Turn the box")) { if chosen { turnOver() } }
-         .accessibilityIdentifier("tile.\(detail.id)")
-     }
- 
-@@ -238,6 +395,7 @@ struct CoverFlowView: View, Equatable {
+@@ -238,6 +327,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -1614,7 +1563,7 @@ index 8651917..f804056 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,14 +404,112 @@ struct CoverFlowView: View, Equatable {
+@@ -246,14 +336,106 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -1638,7 +1587,6 @@ index 8651917..f804056 100644
 +        HintBar {
 +            // A on the centred box opens it (the game starts from its card); a game that cannot start shows its way out.
 +            GlyphHint(role: .activate, label: selected.game.state == .playable ? ShellStrings.text("Open the box") : selected.game.state.actionTitle)
-+            GlyphHint(role: .turn, label: ShellStrings.text("Turn the box"))
              GlyphHint(role: .settings, label: ShellStrings.text("Game settings"))
              GlyphHint(role: .controllers, label: ShellStrings.text("Controllers"))
 +            if platforms.count > 1 { ShoulderHint(label: ShellStrings.text("Console")) }
@@ -1653,17 +1601,12 @@ index 8651917..f804056 100644
 +    let game: GameTile
 +    let chosen: Bool
 +    let width: CGFloat
-+    /// The box turned over by the player, in degrees (0 the front).
-+    var turn: Double = 0
-+    /// Its back cover, decoded while it is chosen.
-+    var back: Artwork?
 +    var body: some View {
 +        let height = width / CGFloat(game.boxRatio)
 +        let radius = min(width, height) * 0.035
 +        let shape = RoundedRectangle(cornerRadius: radius)
 +        let glow = game.light.color
-+        TurnedBox(angle: turn, front: face(height: height, shape: shape),
-+                  back: BoxBackFace(game: game, picture: back, width: width, height: height))
++        face(height: height, shape: shape)
 +            .overlay(alignment: .topLeading) {
 +                // A ready game shows no dot: it would sit on the box's console logo. The dot stays as a warning
 +                // when the game needs its data, an app update, or cannot run.
@@ -1731,7 +1674,7 @@ index 8651917..f804056 100644
      }
  }
  
-@@ -352,30 +608,75 @@ private struct FlowTilt: ViewModifier {
+@@ -352,30 +534,75 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -1819,7 +1762,7 @@ index 8651917..f804056 100644
  }
  
  /// The controller count on top of art, which opens Controllers.
-@@ -407,3 +708,47 @@ struct ShellSettingsChip: View {
+@@ -407,3 +634,47 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
@@ -1869,10 +1812,10 @@ index 8651917..f804056 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..9e262bd
+index 0000000..65f88b3
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,683 @@
+@@ -0,0 +1,726 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1890,9 +1833,17 @@ index 0000000..9e262bd
 +    let close: () -> Void
 +    /// Play from the info panel: once the box has opened, the card goes in by itself (the same animation and sound as a tap on it).
 +    var autoInsert = false
++    /// Counts the presses of View: each turns the closed box over.
++    var turnRequest = 0
++    /// The box has opened (the focus goes to the card).
++    var opened: () -> Void = {}
 +    /// The box has come forward.
 +    @State private var shown = false
-+    @State private var opened = false
++    @State private var isOpen = false
++    /// The closed box turned over, in degrees: 0 its front, 180 its back (BoxTurn).
++    @State private var turn: Double = 0
++    @State private var turnStart: Double?
++    @State private var backCover: Artwork?
 +    @State private var phase = InsertPhase.idle
 +    /// Counts the clicks, for the haptic feedback.
 +    @State private var clicks = 0
@@ -1906,7 +1857,7 @@ index 0000000..9e262bd
 +    var body: some View {
 +        // An N64 game has no box to open: its cartridge goes straight into a console.
 +        if game.isCart64 {
-+            CartridgeConsoleView(game: game, insert: insert, showInfo: showInfo, close: close, autoInsert: autoInsert)
++            CartridgeConsoleView(game: game, insert: insert, showInfo: showInfo, close: close, autoInsert: autoInsert, turnRequest: turnRequest)
 +        } else {
 +            caseBody
 +        }
@@ -1936,21 +1887,40 @@ index 0000000..9e262bd
 +                    .contentShape(Rectangle())
 +                    .onTapGesture { if phase == .idle { close() } }
 +                    .accessibilityHidden(true)
-+                OpeningCase(game: game, width: width, progress: opened ? 1 : 0, cardInTray: phase == .idle)
++                // Closed, it turns over to its back; open, it faces the player.
++                TurnedBox(angle: isOpen ? 0 : turn,
++                          front: OpeningCase(game: game, width: width, progress: isOpen ? 1 : 0, cardInTray: phase == .idle),
++                          back: BoxBackFace(game: game, picture: backCover, width: width, height: height))
 +                    .rotation3DEffect(.degrees(shown ? 0 : 38), axis: (x: 0, y: 1, z: 0), perspective: 0.45)
 +                    .rotation3DEffect(.degrees(shown ? 4 : 0), axis: (x: 1, y: 0, z: 0), perspective: 0.45)
 +                    .scaleEffect(shown ? 1 : 0.5)
 +                    .opacity(shown ? 1 : 0)
 +                    .offset(y: -height * 0.03)
 +                    .onTapGesture { if phase == .idle { toggle() } }
++                    // A drag across the closed box turns it over, following the finger, and it settles on a face when let go.
++                    .highPriorityGesture(DragGesture(minimumDistance: 12)
++                        .onChanged { drag in
++                            guard !isOpen, phase == .idle else { return }
++                            let start = turnStart ?? turn
++                            if turnStart == nil { turnStart = turn }
++                            turn = start + BoxTurn.angle(drag: drag.translation.width, width: width)
++                        }
++                        .onEnded { drag in
++                            guard let start = turnStart else { return }
++                            turnStart = nil
++                            let end = BoxTurn.settle(start: start, predicted: start + BoxTurn.angle(drag: drag.predictedEndTranslation.width, width: width))
++                            if end != start { NavSound.tick() }
++                            withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.15)) { turn = end }
++                        })
++                    .accessibilityAction(named: ShellStrings.text("Turn the box")) { turnOver() }
 +                    .accessibilityElement()
 +                    .accessibilityLabel(game.title)
-+                    .accessibilityValue(opened ? ShellStrings.text("Open") : ShellStrings.text("Closed"))
++                    .accessibilityValue(isOpen ? ShellStrings.text("Open") : ShellStrings.text("Closed"))
 +                    .accessibilityAddTraits(.isButton)
-+                    .accessibilityAction(named: opened ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"), toggle)
++                    .accessibilityAction(named: isOpen ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"), toggle)
 +                    .accessibilityIdentifier("box.case")
 +                // The card, as a button over the one in the tray, once the box is open.
-+                if opened && phase == .idle {
++                if isOpen && phase == .idle {
 +                    Button(action: play) { Color.clear.contentShape(Rectangle()) }
 +                        .buttonStyle(.plain)
 +                        .frame(width: card.width * 1.1, height: card.height * 1.1)
@@ -1962,7 +1932,7 @@ index 0000000..9e262bd
 +                }
 +                ConsoleSlot(width: card.width * scale * 1.18, lit: phase == .flying || phase == .inside, flare: phase == .inside)
 +                    .position(x: slot.x, y: slot.y)
-+                    .opacity(opened && playable ? 1 : 0)
++                    .opacity(isOpen && playable ? 1 : 0)
 +                    .accessibilityHidden(true)
 +                if phase != .idle {
 +                    // The flying card, masked above the slot's line: going up through it, it goes into the console.
@@ -1999,12 +1969,13 @@ index 0000000..9e262bd
 +                    }
 +                    Spacer(minLength: 0)
 +                    HStack(spacing: 20) {
-+                        if opened && playable {
++                        if isOpen && playable {
 +                            GlyphHint(role: .activate, label: insertLabel)
 +                        }
++                        if !isOpen { GlyphHint(role: .turn, label: ShellStrings.text("Turn the box")) }
 +                        Button(action: toggle) {
-+                            Label(opened ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"),
-+                                  systemImage: opened ? "arrow.uturn.backward" : "book.pages")
++                            Label(isOpen ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"),
++                                  systemImage: isOpen ? "arrow.uturn.backward" : "book.pages")
 +                        }
 +                        .buttonStyle(ChipButtonStyle())
 +                        .accessibilityIdentifier("box.toggle")
@@ -2028,6 +1999,8 @@ index 0000000..9e262bd
 +        }
 +        .sensoryFeedback(.impact(weight: .heavy, intensity: 1), trigger: clicks)
 +        .onAppear(perform: present)
++        .task { backCover = await BackCovers.load(game.back) }
++        .onChange(of: turnRequest) { _, _ in turnOver() }
 +        .environment(\.caseStyle, .of(game))   // a disc and its black case for a disc platform
 +    }
 +
@@ -2044,12 +2017,21 @@ index 0000000..9e262bd
 +
 +    private func present() {
 +        if playable { InsertSound.prepare(disc: game.isDisc, cart64: game.isCart64) }
-+        if reduceMotion { shown = true; opened = true; if autoInsert { play() }; return }
++        // The box comes forward closed: the player turns it to read its back, or taps it to open it. Play from the info panel
++        // opens it and puts the card in by itself.
++        if reduceMotion { shown = true; if autoInsert { isOpen = true; play() }; return }
 +        withAnimation(.spring(duration: 0.6, bounce: 0.18)) { shown = true }
-+        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { opened = true } completion: {
++        guard autoInsert else { return }
++        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { isOpen = true } completion: {
 +            // A short look at the open box, then the card goes in.
-+            if autoInsert { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { play() } }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { play() }
 +        }
++    }
++    /// View: the closed box turns over in one go, always the same way round.
++    private func turnOver() {
++        guard !isOpen, phase == .idle else { return }
++        NavSound.tick()
++        withAnimation(reduceMotion ? nil : .spring(duration: 0.6, bounce: 0.12)) { turn = BoxTurn.next(from: turn) }
 +    }
 +    /// The game, from the black screen. A game that does not start leaves the box here: after a moment the screen comes back and
 +    /// the card is in the tray again, for another try or to leave.
@@ -2067,7 +2049,11 @@ index 0000000..9e262bd
 +    static let curtainHold: TimeInterval = 0.7
 +    private func toggle() {
 +        guard phase == .idle else { return }
-+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.9)) { opened.toggle() }
++        // Opened from its back, it comes round to its front as it opens.
++        let front = (turn / 360).rounded() * 360
++        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.9)) { turn = front; isOpen.toggle() } completion: {
++            if isOpen { opened() }
++        }
 +    }
 +    /// The card into the console, then the game. A game that cannot start takes its way out at once.
 +    private func play() {
@@ -3207,7 +3193,7 @@ index 0000000..4550465
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index eb5e2ef..c606272 100644
+index eb5e2ef..9dccdeb 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -29,7 +29,8 @@ enum ShellLayout: Equatable {
@@ -3237,7 +3223,7 @@ index eb5e2ef..c606272 100644
 +    @State private var boxAutoInsert = false
 +    /// The way the last change of console went (1 next, -1 previous), for the boxes' slide.
 +    @State private var platformStep = 1
-+    /// Counts the presses of View: each turns the chosen box over (CoverFlowView).
++    /// Counts the presses of View: each turns the box in front of the player over (GameBoxView), while it is closed.
 +    @State private var turnRequest = 0
 +    /// The showcase: after `Showcase.delay` without a touch or a button, the boxes go by on their own, the top bar and the hints
 +    /// gone. Any button or touch ends it and brings back the console and the game it started from.
@@ -3363,13 +3349,14 @@ index eb5e2ef..c606272 100644
                      if panelOverLibrary {
                          // The same dimming and dismissal as the Controllers overlay.
                          Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
-@@ -147,6 +223,39 @@ public struct LibraryView: View {
+@@ -147,6 +223,40 @@ public struct LibraryView: View {
                          .accessibilityAddTraits(settingsOpen ? .isModal : [])
                          .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
                  }
 +                if boxOpen, let selected {
 +                    GameBoxView(game: selected.game, insert: { primary(selected) }, showInfo: { showInfoFromBox(selected) },
-+                                close: closeBox, autoInsert: boxAutoInsert)
++                                close: closeBox, autoInsert: boxAutoInsert, turnRequest: turnRequest,
++                                opened: { if focus.id == "box.toggle" || focus.id == nil { focus.id = "box.cart" } })
 +                        // Laid out in the safe area (its backdrop runs under the status bar by itself), so the title and Close
 +                        // stay clear of the clock and the battery.
 +                        .accessibilityAddTraits(.isModal)
@@ -3403,7 +3390,7 @@ index eb5e2ef..c606272 100644
                  if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
                      Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
                          .onTapGesture { closeHelp() }
-@@ -235,13 +344,16 @@ public struct LibraryView: View {
+@@ -235,13 +345,16 @@ public struct LibraryView: View {
              .transformPreference(FocusTargets.self) { values in
                  values = values.filter { target in
                      if buttonTestOpen { return target.id.hasPrefix("test.") }
@@ -3421,7 +3408,7 @@ index eb5e2ef..c606272 100644
                  }
              }
              .coordinateSpace(name: "shell")
-@@ -265,6 +377,9 @@ public struct LibraryView: View {
+@@ -265,6 +378,9 @@ public struct LibraryView: View {
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
@@ -3431,7 +3418,7 @@ index eb5e2ef..c606272 100644
          .environment(\.shellPickChoice, { request in openChoice(request) })
          .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
          .environment(\.shellOpenButtonTest, { openButtonTest() })
-@@ -272,9 +387,36 @@ public struct LibraryView: View {
+@@ -272,9 +388,36 @@ public struct LibraryView: View {
          .environment(\.shellAskDelete, { game in openDelete(game.id) })
          .environment(\.shellFocus, focus)
          .environment(\.shellInputDevice, device)
@@ -3468,7 +3455,7 @@ index eb5e2ef..c606272 100644
          // A hardware keyboard, as on the Mac: arrows move, Return activates, Escape goes back, O opens game settings,
          // Y opens controllers.
          .focusable().focused($keyboardFocus).focusEffectDisabled()
-@@ -289,15 +431,19 @@ public struct LibraryView: View {
+@@ -289,15 +432,18 @@ public struct LibraryView: View {
          .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
          .onDisappear { targets.values.removeAll() }
          .onChange(of: games.map(\.id)) { _, ids in
@@ -3486,8 +3473,7 @@ index eb5e2ef..c606272 100644
 -                          openShellSettings: openShellSettings)
 +                          select: select, primary: openFromCover, openSettings: openSettings, openControllers: openControllers,
 +                          openShellSettings: openShellSettings, platforms: platforms, platform: platform,
-+                          choosePlatform: { choosePlatform($0) }, platformStep: platformStep, turnRequest: turnRequest,
-+                          showcase: showcase, preview: { previewID = $0 })
++                          choosePlatform: { choosePlatform($0) }, platformStep: platformStep, showcase: showcase, preview: { previewID = $0 })
                  .equatable()
                  .transition(.opacity)
          } else {
@@ -3601,7 +3587,7 @@ index eb5e2ef..c606272 100644
          selectedID = id
          actions.onSelect(id)
          settingsPosition.scrollTo(edge: .top)
-@@ -406,7 +639,70 @@ public struct LibraryView: View {
+@@ -406,7 +639,72 @@ public struct LibraryView: View {
      }
      private func closeSettings() {
          settingsOpen = false
@@ -3640,7 +3626,9 @@ index eb5e2ef..c606272 100644
 +        boxOpen = false
 +        focus.id = selected.map { "lib.tile.\($0.id)" }
 +    }
-+    private func openBox() { noteTouch(); boxAutoInsert = false; boxOpen = true; focus.id = "box.cart" }
++    private func openBox() { noteTouch(); boxAutoInsert = false; boxOpen = true; focus.id = boxFirstFocus(selected) }
++    /// The box's first focus: its toggle (it comes forward closed), the cartridge for an N64 game (no box to open).
++    private func boxFirstFocus(_ detail: GameDetail?) -> String { detail?.game.isCart64 == true ? "box.cart" : "box.toggle" }
 +    /// Play in the info panel: a game that can start goes through its box, the card put in with its animation and sound, as a tap
 +    /// on the box does; another state takes its way out at once.
 +    private func playFromInfo(_ detail: GameDetail) {
@@ -3663,7 +3651,7 @@ index eb5e2ef..c606272 100644
 +        infoOpen = false
 +        boxAutoInsert = false
 +        boxOpen = true
-+        focus.id = "box.cart"
++        focus.id = boxFirstFocus(detail)
 +    }
 +    /// Game info from the box: the panel, with the box closed behind it.
 +    private func showInfoFromBox(_ detail: GameDetail) {
@@ -3673,7 +3661,7 @@ index eb5e2ef..c606272 100644
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -493,7 +789,9 @@ public struct LibraryView: View {
+@@ -493,7 +791,9 @@ public struct LibraryView: View {
          focus.id = "ctl.test"
      }
      private func back() {
@@ -3684,7 +3672,7 @@ index eb5e2ef..c606272 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -502,11 +800,28 @@ public struct LibraryView: View {
+@@ -502,11 +802,28 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -3713,7 +3701,7 @@ index eb5e2ef..c606272 100644
          // Every controller button belongs to the button test while it is open: it closes on B held, touch or Escape.
          if buttonTestOpen, case .controller = source { return }
          if device != source { device = source }
-@@ -514,14 +829,23 @@ public struct LibraryView: View {
+@@ -514,14 +831,22 @@ public struct LibraryView: View {
          focus.visible = true
          if focus.id == nil || !targets.values.contains(where: { $0.id == focus.id }) {
              focus.id = defaultFocus
@@ -3726,9 +3714,8 @@ index eb5e2ef..c606272 100644
          case .settings: openSettings()
          case .controllers: openControllers()
 +        case .turn:
-+            // View turns the chosen box over, in the library itself (not under a panel or a box).
-+            if layout.isCoverFlow && !boxOpen && !infoOpen && !settingsOpen && !shellSettingsOpen && !controllersOpen && shotIndex == nil
-+                && choice == nil && padMapping == nil && helpGameID == nil && deleteGameID == nil { turnRequest += 1 }
++            // View turns the box in front of the player over (the carousel only scrolls).
++            if boxOpen && shotIndex == nil && !settingsOpen && helpGameID == nil { turnRequest += 1 }
          case .left, .right:
 +            // Full screen, left and right go through the screenshots.
 +            if let index = shotIndex, let count = selected?.game.screens.count {
@@ -3738,7 +3725,7 @@ index eb5e2ef..c606272 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -541,6 +865,8 @@ public struct LibraryView: View {
+@@ -541,6 +866,8 @@ public struct LibraryView: View {
          if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
      }
      private var defaultFocus: String? {
@@ -3747,7 +3734,7 @@ index eb5e2ef..c606272 100644
          if buttonTestOpen { return "test.close" }
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
-@@ -549,6 +875,7 @@ public struct LibraryView: View {
+@@ -549,6 +876,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -7463,10 +7450,10 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..9c41b7b
+index 0000000..e2eba30
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,307 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -7507,14 +7494,26 @@ index 0000000..9c41b7b
 +        sleep(1)
 +    }
 +
-+    /// Touch: a tap on the middle cover opens its box (captured while it opens); the round button closes and opens it; Game
-+    /// info shows the panel and Open the box comes back; a tap on the card flies it into the console (captured) and plays.
++    /// Touch: a tap on the middle cover brings its box forward, closed; a drag across it turns it to its back without opening
++    /// it; a tap on it opens it (captured while it opens); the round button closes and opens it; Game info shows the panel and
++    /// Open the box comes back; a tap on the card flies it into the console (captured) and plays.
 +    func testTouch() {
 +        // The particles only where the review looks at them (the tablet's touch run); every other run is still, so the app goes idle between taps.
 +        launch(["--screen", "library"] + (UIDevice.current.userInterfaceIdiom == .pad ? [] : ["--still"]))
 +        shot("touch-01-library")
 +        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.42)).tap()
 +        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 5))
++        sleep(1)
++        shot("touch-02a-box-forward")
++        XCTAssertFalse(app.buttons["box.cart"].exists, "the box opened by itself")
++        let window = app.windows.firstMatch
++        window.coordinate(withNormalizedOffset: CGVector(dx: 0.56, dy: 0.45))
++            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.38, dy: 0.45)))
++        sleep(1)
++        shot("touch-02b-box-back")
++        XCTAssertFalse(app.buttons["box.cart"].exists, "the drag opened the box")
++        // A tap on the box opens it, coming round to its front.
++        app.descendants(matching: .any)["box.case"].firstMatch.tap()
 +        for index in 1...4 {
 +            usleep(250_000)
 +            shot("touch-02-box-opening-\(index)")
@@ -7556,6 +7555,9 @@ index 0000000..9c41b7b
 +        XCTAssertTrue(app.buttons["info.box"].waitForExistence(timeout: 5))
 +        if !app.buttons["info.box"].isHittable { app.buttons["info.shot.0"].swipeDown() }
 +        app.buttons["info.box"].tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 6))
++        sleep(1)
++        app.buttons["box.toggle"].tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        app.buttons["box.cart"].tap()
@@ -7567,12 +7569,18 @@ index 0000000..9c41b7b
 +        expectPlay("touch-07-played")
 +    }
 +
-+    /// Controller (the demo's on-screen stand-ins for its buttons): right moves to the next game, A opens its box, A on the
-+    /// card (the focus once the box is open) plays; B closes the box and goes back.
++    /// Controller (the demo's on-screen stand-ins for its buttons): right moves to the next game, A brings its box forward, View
++    /// turns it over, A opens it, A on the card (the focus once the box is open) plays; B closes the box and goes back.
 +    func testController() {
 +        launch(["--screen", "library", "--input-test", "--still"])
 +        app.buttons["qa.input.right"].tap()
 +        sleep(1)
++        app.buttons["qa.input.activate"].tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 6))
++        sleep(1)
++        app.buttons["qa.input.turn"].tap()
++        sleep(1)
++        shot("pad-00-box-turned")
 +        app.buttons["qa.input.activate"].tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
@@ -7581,6 +7589,9 @@ index 0000000..9c41b7b
 +        sleep(1)
 +        XCTAssertFalse(app.buttons["box.toggle"].exists)
 +        shot("pad-02-library")
++        app.buttons["qa.input.activate"].tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 6))
++        sleep(1)
 +        app.buttons["qa.input.activate"].tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
@@ -7638,6 +7649,8 @@ index 0000000..9c41b7b
 +        shot("web-02-library-ps2")
 +        // A tap on the only PS2 game opens its box (it did nothing on the iPhone: the shelf waited for the carousel to settle)
 +        app.buttons["tile.street"].firstMatch.tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 6))
++        app.buttons["box.toggle"].tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        shot("web-03-box-disc")
@@ -7659,6 +7672,9 @@ index 0000000..9c41b7b
 +        app.buttons["qa.input.next"].tap()
 +        sleep(1)
 +        app.buttons["qa.input.activate"].tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 6))
++        sleep(1)
++        app.buttons["qa.input.activate"].tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        app.buttons["qa.input.activate"].tap()
@@ -7678,6 +7694,12 @@ index 0000000..9c41b7b
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        shot("web-10-box-n64")
++        let cart = app.buttons["box.cart"]
++        cart.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
++            .press(forDuration: 0.05, thenDragTo: cart.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
++        sleep(1)
++        shot("web-10b-cart-back")
++        XCTAssertFalse(app.buttons["web.close"].exists, "the drag put the cartridge in")
 +        app.buttons["box.cart"].tap()
 +        for index in 1...3 {
 +            usleep(220_000)
@@ -7686,31 +7708,44 @@ index 0000000..9c41b7b
 +        XCTAssertTrue(app.buttons["web.close"].waitForExistence(timeout: 10))
 +    }
 +
-+    /// The box turned over: a drag on the middle box shows its back (a real back cover for the first game), the box does not
-+    /// open and the selection stays; View turns it back. Then, left alone, the showcase starts by itself (the top bar and hints
-+    /// gone, the boxes going by), and a button brings back the game it started from.
++    /// A drag across the carousel scrolls it to another game (it never turns a box); a tap brings the box forward, closed, a drag
++    /// on it turns it to its back (a real back cover for the first game) without opening it, and View turns it back. Then, left
++    /// alone, the showcase starts by itself (the top bar and hints gone, the boxes going by), and a button brings back the game
++    /// it started from.
 +    func testTurnAndShowcase() {
 +        launch(["--screen", "library", "--still", "--input-test", "--showcase-after", "8"])
 +        let title = app.staticTexts["hero.title"].firstMatch
 +        XCTAssertTrue(title.waitForExistence(timeout: 5))
 +        let first = title.label
-+        shot("turn-01-front")
 +        let window = app.windows.firstMatch
 +        window.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.42))
 +            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.42)))
++        sleep(2)
++        shot("turn-00-carousel-scrolled")
++        XCTAssertNotEqual(title.label, first, "a drag on the carousel did not scroll it")
++        app.buttons["qa.input.left"].tap()
++        sleep(1)
++        XCTAssertEqual(title.label, first)
++        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.42)).tap()
++        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 5))
++        sleep(1)
++        shot("turn-01-front")
++        window.coordinate(withNormalizedOffset: CGVector(dx: 0.56, dy: 0.45))
++            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.38, dy: 0.45)))
 +        usleep(150_000)
 +        shot("turn-02-turning")
 +        sleep(1)
 +        shot("turn-03-back")
 +        XCTAssertFalse(app.buttons["box.cart"].exists, "the drag opened the box")
-+        XCTAssertEqual(title.label, first, "the drag changed the game")
 +        app.buttons["qa.input.turn"].tap()
 +        sleep(1)
 +        shot("turn-04-front-again")
 +        app.buttons["qa.input.turn"].tap()
 +        sleep(1)
 +        shot("turn-05-back-by-button")
-+        app.buttons["qa.input.turn"].tap()
++        app.buttons["qa.input.back"].tap()
++        sleep(1)
++        XCTAssertFalse(app.buttons["box.toggle"].exists)
 +        // Left alone: the showcase.
 +        let end = app.descendants(matching: .any)["showcase.end"]
 +        XCTAssertTrue(end.waitForExistence(timeout: 14), "the showcase did not start")
