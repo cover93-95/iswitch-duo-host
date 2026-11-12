@@ -859,10 +859,10 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..fae2552 100644
+index 8651917..4664cd8 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-@@ -16,6 +16,16 @@ struct CoverFlowView: View, Equatable {
+@@ -16,6 +16,19 @@ struct CoverFlowView: View, Equatable {
      let openSettings: () -> Void
      let openControllers: () -> Void
      let openShellSettings: () -> Void
@@ -871,6 +871,9 @@ index 8651917..fae2552 100644
 +    var platforms: [String] = []
 +    var platform: String = ""
 +    var choosePlatform: (String) -> Void = { _ in }
++    /// The way the last change of console went: 1 to the next (RB), -1 to the previous (LB). The boxes of the old console slide
++    /// out on that side and the new ones come in from the other.
++    var platformStep = 1
 +    /// The card in the middle while the player scrolls, before it becomes the selection (nil once the scroll has settled):
 +    /// the backdrop follows it at once instead of waiting for the carousel to stop.
 +    var preview: (String?) -> Void = { _ in }
@@ -879,15 +882,15 @@ index 8651917..fae2552 100644
      @State private var centredID: String?
      /// How far the carousel is scrolled: 0 with the first card in the middle.
      @State private var scrolled: CGFloat = 0
-@@ -34,6 +44,7 @@ struct CoverFlowView: View, Equatable {
+@@ -34,6 +47,7 @@ struct CoverFlowView: View, Equatable {
      nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
          lhs.games.map(\.game) == rhs.games.map(\.game) && lhs.selected.game == rhs.selected.game
              && lhs.controllers == rhs.controllers && lhs.showsHints == rhs.showsHints && lhs.screenInsets == rhs.screenInsets
-+            && lhs.platforms == rhs.platforms && lhs.platform == rhs.platform
++            && lhs.platforms == rhs.platforms && lhs.platform == rhs.platform && lhs.platformStep == rhs.platformStep
      }
  
      var body: some View {
-@@ -43,47 +54,60 @@ struct CoverFlowView: View, Equatable {
+@@ -43,47 +57,75 @@ struct CoverFlowView: View, Equatable {
              // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
              // bottom edge, and never so wide that the neighbours vanish.
              let height = geometry.size.height
@@ -912,7 +915,12 @@ index 8651917..fae2552 100644
                  VStack(spacing: 0) {
                      Group {
                          if games.count <= 3 { shelf(width: geometry.size.width, cover: cover) } else { carousel(width: geometry.size.width, cover: cover) }
-                     }.frame(height: cardHeight * 1.06)
+-                    }.frame(height: cardHeight * 1.06)
++                    }
++                    // A new console's boxes are a new row: it slides in from the side of the shoulder button while the old one leaves.
++                    .id(platform)
++                    .transition(platformSlide(width: geometry.size.width))
++                    .frame(height: cardHeight * 1.06)
                      info(short: short, width: geometry.size.width)
 -                        .padding(.top, gap).padding(.horizontal, 24)
 +                        .padding(.top, gap + cardHeight * Self.reflection).padding(.horizontal, 24)
@@ -933,6 +941,7 @@ index 8651917..fae2552 100644
              }
          }
          .sensoryFeedback(.selection, trigger: selected.id)
++        .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: platform)
          .onAppear { centredID = selected.id }
 +        // A scroll cut short (a game opened, the layout changed) leaves no card previewed behind it.
 +        .onDisappear { if previewed != nil { previewed = nil; preview(nil) } }
@@ -943,10 +952,20 @@ index 8651917..fae2552 100644
              withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { centredID = id }
          }
 +        // Another platform's games: a new shelf or carousel, at rest, its chosen game in the middle
-+        .onChange(of: platform) { _, _ in settled = true; userScrolling = false; centredID = selected.id }
++        .onChange(of: platform) { _, _ in settled = true; userScrolling = false; scrolled = 0; centredID = selected.id }
      }
  
 -    /// The title and state under the card: two lines of title reserved, then the state line.
++    /// The boxes' way in and out when the console changes: the new row from the side of the shoulder button, the old one out
++    /// the other way. Reduce Motion: a crossfade.
++    private func platformSlide(width: CGFloat) -> AnyTransition {
++        if reduceMotion { return .opacity }
++        let distance: CGFloat = CGFloat(platformStep) * width * 0.6
++        let comeIn: AnyTransition = AnyTransition.offset(x: distance, y: 0).combined(with: .opacity)
++        let goOut: AnyTransition = AnyTransition.offset(x: -distance, y: 0).combined(with: .opacity)
++        return AnyTransition.asymmetric(insertion: comeIn, removal: goOut)
++    }
++
 +    /// The title and state under the card: two lines of title reserved, then the state line, then the page dots.
      static func infoHeight(short: Bool) -> CGFloat {
          let size: CGFloat = short ? 18 : 28
@@ -960,7 +979,7 @@ index 8651917..fae2552 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -96,8 +120,9 @@ struct CoverFlowView: View, Equatable {
+@@ -96,8 +138,9 @@ struct CoverFlowView: View, Equatable {
              Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                  .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
              Spacer(minLength: 12)
@@ -972,7 +991,7 @@ index 8651917..fae2552 100644
                  hints.opacity(showsHints ? 1 : 0)
                  Spacer(minLength: 12)
              }
-@@ -113,6 +138,11 @@ struct CoverFlowView: View, Equatable {
+@@ -113,6 +156,11 @@ struct CoverFlowView: View, Equatable {
          // title and chips, centred in it, would sink away from the top edge, so the row stops growing at xxLarge, as the
          // title under the card does.
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
@@ -984,7 +1003,7 @@ index 8651917..fae2552 100644
      }
      private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
      private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
-@@ -129,6 +159,7 @@ struct CoverFlowView: View, Equatable {
+@@ -129,6 +177,7 @@ struct CoverFlowView: View, Equatable {
                      // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
                      coverButton(detail, cover: cover)
                          .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
@@ -992,7 +1011,7 @@ index 8651917..fae2552 100644
                          .id(detail.id)
                  }
              }.scrollTargetLayout()
-@@ -138,6 +169,11 @@ struct CoverFlowView: View, Equatable {
+@@ -138,6 +187,11 @@ struct CoverFlowView: View, Equatable {
          .contentMargins(.horizontal, margin, for: .scrollContent)
          .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x + $0.contentInsets.leading } action: { _, offset in
              scrolled = offset
@@ -1004,7 +1023,7 @@ index 8651917..fae2552 100644
          }
          .onScrollPhaseChange { old, phase, context in
              // A touch scroll goes interacting, decelerating, maybe animating (the snap), then idle. Only once it has
-@@ -158,11 +194,39 @@ struct CoverFlowView: View, Equatable {
+@@ -158,11 +212,39 @@ struct CoverFlowView: View, Equatable {
                      if games[index].id != selected.id { select(games[index].id) }
                  }
                  userScrolling = false
@@ -1044,7 +1063,7 @@ index 8651917..fae2552 100644
      }
  
      /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
-@@ -190,20 +254,21 @@ struct CoverFlowView: View, Equatable {
+@@ -190,20 +272,21 @@ struct CoverFlowView: View, Equatable {
              // comes to the middle and never starts anything.
              if longPressed { longPressed = false; return }
              if chosen {
@@ -1071,7 +1090,7 @@ index 8651917..fae2552 100644
              longPressed = true
              openSettings()
          })
-@@ -238,6 +303,7 @@ struct CoverFlowView: View, Equatable {
+@@ -238,6 +321,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -1079,7 +1098,7 @@ index 8651917..fae2552 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,14 +312,86 @@ struct CoverFlowView: View, Equatable {
+@@ -246,14 +330,106 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -1106,14 +1125,13 @@ index 8651917..fae2552 100644
              GlyphHint(role: .settings, label: ShellStrings.text("Game settings"))
              GlyphHint(role: .controllers, label: ShellStrings.text("Controllers"))
 +            if platforms.count > 1 { ShoulderHint(label: ShellStrings.text("Console")) }
-         }
--        .frame(minHeight: 24)
--        .accessibilityHidden(true)
++        }
 +    }
 +}
 +
-+/// A game as an upright box: its cover, a soft sheen, the state dot, and its reflection on the floor under it. The chosen
-+/// box is lit: a light edge, a blue glow around it and a ring of light at its foot.
++/// A game as an upright box (an N64 game as its cartridge): its cover, a soft sheen, the state dot, and its reflection on the
++/// floor under it. The chosen box is lit in its own colour, the hue of its cover: a light edge, a glow around it and a ring of
++/// light at its foot.
 +private struct BoxCover: View {
 +    let game: GameTile
 +    let chosen: Bool
@@ -1122,15 +1140,8 @@ index 8651917..fae2552 100644
 +        let height = width / CGFloat(game.boxRatio)
 +        let radius = min(width, height) * 0.035
 +        let shape = RoundedRectangle(cornerRadius: radius)
-+        let glow = Color(red: 0.35, green: 0.65, blue: 1.0)
-+        ArtView(game: game, whole: game.webURL != nil)
-+            .frame(width: width, height: height)
-+            .clipShape(shape)
-+            .overlay(
-+                LinearGradient(colors: [.white.opacity(0.20), .clear, .clear], startPoint: .topLeading, endPoint: .center)
-+                    .clipShape(shape).allowsHitTesting(false)
-+            )
-+            .overlay(shape.strokeBorder(.white.opacity(chosen ? 0.6 : 0.12), lineWidth: chosen ? 2 : 1))
++        let glow = game.light.color
++        face(height: height, shape: shape)
 +            .overlay(alignment: .topLeading) {
 +                // A ready game shows no dot: it would sit on the box's console logo. The dot stays as a warning
 +                // when the game needs its data, an app update, or cannot run.
@@ -1157,9 +1168,7 @@ index 8651917..fae2552 100644
 +            }
 +            .background(alignment: .top) {
 +                // The reflection: the cover turned over under the box, fading out.
-+                ArtView(game: game, backdrop: false, lettering: false, whole: game.webURL != nil)
-+                    .frame(width: width, height: height)
-+                    .clipShape(shape)
++                reflected(height: height, shape: shape)
 +                    .mask(LinearGradient(colors: [.clear, .clear, .white.opacity(0.35)], startPoint: .top, endPoint: .bottom))
 +                    .scaleEffect(x: 1, y: -1, anchor: .bottom)
 +                    .offset(y: 4)
@@ -1167,10 +1176,40 @@ index 8651917..fae2552 100644
 +                    .allowsHitTesting(false)
 +            }
 +            .accessibilityHidden(true)
++    }
++
++    /// The front: the cover in its box, or an N64 game's grey cartridge with the cover on its label, as it stands on a shelf.
++    @ViewBuilder private func face(height: CGFloat, shape: RoundedRectangle) -> some View {
++        if game.isCart64 {
++            GameCard(game: game, width: width, height: height)
++                .overlay(LinearGradient(colors: [.white.opacity(chosen ? 0.16 : 0.08), .clear], startPoint: .topLeading, endPoint: .center)
++                    .allowsHitTesting(false))
++        } else {
++            ArtView(game: game, whole: game.webURL != nil)
++                .frame(width: width, height: height)
++                .clipShape(shape)
++                .overlay(
++                    LinearGradient(colors: [.white.opacity(0.20), .clear, .clear], startPoint: .topLeading, endPoint: .center)
++                        .clipShape(shape).allowsHitTesting(false)
++                )
++                .overlay(shape.strokeBorder(.white.opacity(chosen ? 0.6 : 0.12), lineWidth: chosen ? 2 : 1))
++        }
++    }
++    /// The same front for the reflection, without the shine.
++    @ViewBuilder private func reflected(height: CGFloat, shape: RoundedRectangle) -> some View {
++        if game.isCart64 {
++            GameCard(game: game, width: width, height: height)
++        } else {
++            ArtView(game: game, backdrop: false, lettering: false, whole: game.webURL != nil)
++                .frame(width: width, height: height)
++                .clipShape(shape)
+         }
+-        .frame(minHeight: 24)
+-        .accessibilityHidden(true)
      }
  }
  
-@@ -352,27 +490,54 @@ private struct FlowTilt: ViewModifier {
+@@ -352,30 +528,75 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -1179,6 +1218,8 @@ index 8651917..fae2552 100644
 +/// crossfades as the middle cover changes.
  struct CoverFlowBackdrop: View {
      let game: GameTile
++    /// How far the boxes are moved sideways (left, while the info panel is open), so the halo stays behind the middle box.
++    var shift: CGFloat = 0
      @Environment(\.accessibilityReduceMotion) private var reduceMotion
      var body: some View {
          ZStack {
@@ -1233,11 +1274,30 @@ index 8651917..fae2552 100644
 +            }
          }
 -        .animation(reduceMotion ? .linear(duration: 0.2) : .easeInOut(duration: 0.45), value: game.id)
++        .overlay { halo }
 +        .animation(reduceMotion ? .linear(duration: 0.15) : .easeOut(duration: 0.2), value: game.id)
++        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: shift)
          .ignoresSafeArea()
          .accessibilityHidden(true)
      }
-@@ -407,3 +572,47 @@ struct ShellSettingsChip: View {
++    /// The chosen game's light behind its box: a wide soft glow in the hue of its cover, crossfading as the selection moves.
++    private var halo: some View {
++        let light = game.light.color
++        return GeometryReader { geometry in
++            RadialGradient(colors: [light.opacity(0.34), light.opacity(0.12), .clear], center: .center, startRadius: 0,
++                           endRadius: max(geometry.size.width, geometry.size.height) * 0.42)
++                .frame(width: geometry.size.width, height: geometry.size.height)
++                .offset(x: shift, y: -geometry.size.height * 0.05)
++                .blendMode(.plusLighter)
++                .id(game.id)
++                .transition(.opacity.animation(.easeInOut(duration: 0.45)))
++        }
++        .allowsHitTesting(false)
++    }
+ }
+ 
+ /// The controller count on top of art, which opens Controllers.
+@@ -407,3 +628,47 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
@@ -1287,10 +1347,10 @@ index 8651917..fae2552 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..21a18de
+index 0000000..115b868
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,617 @@
+@@ -0,0 +1,671 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1427,10 +1487,11 @@ index 0000000..21a18de
 +                }
 +                .padding(.horizontal, 24).padding(.vertical, 12)
 +                .allowsHitTesting(phase == .idle)
-+                Color.black.ignoresSafeArea()
-+                    .opacity(blackout ? 1 : 0)
-+                    .allowsHitTesting(blackout)
-+                    .accessibilityHidden(true)
++                if blackout {
++                    LaunchCurtain(game: game)
++                        .transition(.opacity)
++                        .accessibilityHidden(true)
++                }
 +            }
 +            .frame(width: size.width, height: size.height)
 +        }
@@ -1467,6 +1528,11 @@ index 0000000..21a18de
 +            withAnimation(.easeOut(duration: 0.4)) { blackout = false; phase = .idle }
 +        }
 +    }
++    /// The loading screen stays a moment, its title read, before the game is asked to start.
++    private func hold() {
++        DispatchQueue.main.asyncAfter(deadline: .now() + Self.curtainHold) { start() }
++    }
++    static let curtainHold: TimeInterval = 0.7
 +    private func toggle() {
 +        guard phase == .idle else { return }
 +        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.9)) { opened.toggle() }
@@ -1486,8 +1552,8 @@ index 0000000..21a18de
 +                withAnimation(.easeIn(duration: 0.14)) { phase = .inside } completion: {
 +                    InsertSound.play(cart64: game.isCart64)
 +                    clicks += 1
-+                    // The slot flares, then the screen fades to black and the game starts in the dark.
-+                    withAnimation(.easeIn(duration: 0.6).delay(0.3)) { blackout = true } completion: { start() }
++                    // The slot flares, then the game's loading screen fades in and the game starts behind it.
++                    withAnimation(.easeIn(duration: 0.6).delay(0.3)) { blackout = true } completion: { hold() }
 +                }
 +            }
 +        }
@@ -1501,9 +1567,57 @@ index 0000000..21a18de
 +                InsertSound.play(disc: true)
 +                clicks += 1
 +                withAnimation(.easeInOut(duration: 1.0)) { phase = .inside } completion: {
-+                    withAnimation(.easeIn(duration: 0.5).delay(0.15)) { blackout = true } completion: { start() }
++                    withAnimation(.easeIn(duration: 0.5).delay(0.15)) { blackout = true } completion: { hold() }
 +                }
 +            }
++        }
++    }
++}
++
++/// The screen once the card is in, until the game takes it over: the game's own backdrop picture (or its cover, blurred) slowly
++/// drawing closer under a veil, a glow in its colour, its title and a small spinner, instead of a black screen.
++struct LaunchCurtain: View {
++    let game: GameTile
++    @State private var closer = false
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++    var body: some View {
++        GeometryReader { geometry in
++            ZStack {
++                Color.black
++                Group {
++                    if let picture = game.backdrop {
++                        Image(decorative: picture.image, scale: 1).resizable().interpolation(.high).scaledToFill()
++                            .opacity(0.62)
++                    } else {
++                        ArtView(game: game, backdrop: true).scaleEffect(1.3).blur(radius: 50, opaque: true).opacity(0.55)
++                    }
++                }
++                .frame(width: geometry.size.width, height: geometry.size.height)
++                .scaleEffect(closer ? 1.07 : 1)
++                .clipped()
++                RadialGradient(colors: [game.light.color.opacity(0.28), .clear], center: .center, startRadius: 0,
++                               endRadius: max(geometry.size.width, geometry.size.height) * 0.5)
++                    .blendMode(.plusLighter)
++                LinearGradient(stops: [.init(color: .black.opacity(0.25), location: 0), .init(color: .clear, location: 0.35),
++                                       .init(color: .black.opacity(0.8), location: 1)], startPoint: .top, endPoint: .bottom)
++                VStack(spacing: 16) {
++                    Spacer()
++                    Text(game.title).shellType(ShellType.flowTitle(min(40, geometry.size.width * 0.045)))
++                        .multilineTextAlignment(.center).lineLimit(2)
++                        .shadow(color: .black.opacity(0.5), radius: 14)
++                    ProgressView().tint(.white.opacity(0.8)).controlSize(.regular)
++                }
++                .foregroundStyle(.white)
++                .padding(.horizontal, 40)
++                .padding(.bottom, geometry.size.height * 0.12)
++            }
++            .frame(width: geometry.size.width, height: geometry.size.height)
++        }
++        .ignoresSafeArea()
++        .contentShape(Rectangle())
++        .onAppear {
++            guard !reduceMotion else { return }
++            withAnimation(.linear(duration: 8)) { closer = true }
 +        }
 +    }
 +}
@@ -2559,7 +2673,7 @@ index 0000000..4550465
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index eb5e2ef..ced09bc 100644
+index eb5e2ef..a79a508 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -29,7 +29,8 @@ enum ShellLayout: Equatable {
@@ -2572,7 +2686,7 @@ index eb5e2ef..ced09bc 100644
      public let controllers: [ControllerInfo]
      public let globalPadMap: PadMap
      /// The controller's state while the button test is open, from the host.
-@@ -37,6 +38,17 @@ public struct LibraryView: View {
+@@ -37,6 +38,19 @@ public struct LibraryView: View {
      public var actions: ShellActions
      public var input: ShellInput?
      @State private var selectedID: String?
@@ -2587,10 +2701,12 @@ index eb5e2ef..ced09bc 100644
 +    @State private var infoTab = 0
 +    /// The box was opened by Play in the info panel: its card goes in by itself.
 +    @State private var boxAutoInsert = false
++    /// The way the last change of console went (1 next, -1 previous), for the boxes' slide.
++    @State private var platformStep = 1
      @State private var settingsOpen: Bool
      @State private var shellSettingsOpen: Bool
      @State private var controllersOpen: Bool
-@@ -50,6 +62,11 @@ public struct LibraryView: View {
+@@ -50,6 +64,11 @@ public struct LibraryView: View {
      /// The button-mapping card, while open.
      @State private var padMapping: PadMappingState?
      @State private var buttonTestOpen: Bool
@@ -2602,7 +2718,7 @@ index eb5e2ef..ced09bc 100644
      @State private var focus: FocusAppearance
      @State private var targets = FocusTargetBuffer()
      @State private var settingsPosition = ScrollPosition()
-@@ -66,22 +83,29 @@ public struct LibraryView: View {
+@@ -66,22 +85,29 @@ public struct LibraryView: View {
      @FocusState private var keyboardFocus: Bool
      @Environment(\.accessibilityReduceMotion) private var reduceMotion
      @Environment(\.dynamicTypeSize) private var typeSize
@@ -2634,7 +2750,7 @@ index eb5e2ef..ced09bc 100644
          _settingsOpen = State(initialValue: initialDetailOpen)
          _controllersOpen = State(initialValue: initialControllersOpen)
          _shellSettingsOpen = State(initialValue: initialShellSettingsOpen)
-@@ -89,6 +113,14 @@ public struct LibraryView: View {
+@@ -89,6 +115,14 @@ public struct LibraryView: View {
          _touchMode = State(initialValue: !initialFocusVisible)
      }
      private var selected: GameDetail? { games.first { $0.id == selectedID } ?? games.first }
@@ -2649,18 +2765,19 @@ index eb5e2ef..ced09bc 100644
  
      public var body: some View {
          GeometryReader { geometry in
-@@ -104,7 +136,9 @@ public struct LibraryView: View {
+@@ -104,7 +138,10 @@ public struct LibraryView: View {
              let paneCovers = settingsOpen && !floating
              let panelOverLibrary = settingsOpen && floating
              ZStack(alignment: .topLeading) {
 -                if layout.isCoverFlow, let selected { CoverFlowBackdrop(game: selected.game) } else { ShellPalette.background.ignoresSafeArea() }
 +                if layout.isCoverFlow, let selected {
-+                    CoverFlowBackdrop(game: (previewID.flatMap { id in games.first { $0.id == id } } ?? selected).game)
++                    CoverFlowBackdrop(game: (previewID.flatMap { id in games.first { $0.id == id } } ?? selected).game,
++                                      shift: infoOpen ? -Self.infoWidth(geometry.size.width) / 2 : 0)
 +                } else { ShellPalette.background.ignoresSafeArea() }
                  if games.isEmpty {
                      EmptyLibraryView()
                          .overlay(alignment: .topTrailing) {
-@@ -114,12 +148,40 @@ public struct LibraryView: View {
+@@ -114,12 +151,40 @@ public struct LibraryView: View {
                              }.padding(.top, 6).padding(.trailing, 16)
                          }
                  } else if let selected {
@@ -2701,7 +2818,7 @@ index eb5e2ef..ced09bc 100644
                      if panelOverLibrary {
                          // The same dimming and dismissal as the Controllers overlay.
                          Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
-@@ -147,6 +209,29 @@ public struct LibraryView: View {
+@@ -147,6 +212,29 @@ public struct LibraryView: View {
                          .accessibilityAddTraits(settingsOpen ? .isModal : [])
                          .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
                  }
@@ -2731,7 +2848,7 @@ index eb5e2ef..ced09bc 100644
                  if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
                      Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
                          .onTapGesture { closeHelp() }
-@@ -235,13 +320,16 @@ public struct LibraryView: View {
+@@ -235,13 +323,16 @@ public struct LibraryView: View {
              .transformPreference(FocusTargets.self) { values in
                  values = values.filter { target in
                      if buttonTestOpen { return target.id.hasPrefix("test.") }
@@ -2749,7 +2866,7 @@ index eb5e2ef..ced09bc 100644
                  }
              }
              .coordinateSpace(name: "shell")
-@@ -265,6 +353,9 @@ public struct LibraryView: View {
+@@ -265,6 +356,9 @@ public struct LibraryView: View {
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
@@ -2759,7 +2876,7 @@ index eb5e2ef..ced09bc 100644
          .environment(\.shellPickChoice, { request in openChoice(request) })
          .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
          .environment(\.shellOpenButtonTest, { openButtonTest() })
-@@ -272,6 +363,10 @@ public struct LibraryView: View {
+@@ -272,6 +366,10 @@ public struct LibraryView: View {
          .environment(\.shellAskDelete, { game in openDelete(game.id) })
          .environment(\.shellFocus, focus)
          .environment(\.shellInputDevice, device)
@@ -2770,7 +2887,7 @@ index eb5e2ef..ced09bc 100644
          .foregroundStyle(.white)
          .font(ShellFonts.font(15)).tint(ShellPalette.cream).preferredColorScheme(.dark)
          .onChange(of: input) { _, event in if let event { handle(event.action, from: event.device) } }
-@@ -289,15 +384,18 @@ public struct LibraryView: View {
+@@ -289,15 +387,18 @@ public struct LibraryView: View {
          .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
          .onDisappear { targets.values.removeAll() }
          .onChange(of: games.map(\.id)) { _, ids in
@@ -2787,12 +2904,12 @@ index eb5e2ef..ced09bc 100644
 -                          select: select, primary: primary, openSettings: openSettings, openControllers: openControllers,
 -                          openShellSettings: openShellSettings)
 +                          select: select, primary: openFromCover, openSettings: openSettings, openControllers: openControllers,
-+                          openShellSettings: openShellSettings, platforms: platforms, platform: platform, choosePlatform: choosePlatform,
-+                          preview: { previewID = $0 })
++                          openShellSettings: openShellSettings, platforms: platforms, platform: platform,
++                          choosePlatform: { choosePlatform($0) }, platformStep: platformStep, preview: { previewID = $0 })
                  .equatable()
                  .transition(.opacity)
          } else {
-@@ -368,6 +466,7 @@ public struct LibraryView: View {
+@@ -368,6 +469,7 @@ public struct LibraryView: View {
      }
      private func primary(_ detail: GameDetail) {
          noteTouch()
@@ -2800,7 +2917,7 @@ index eb5e2ef..ced09bc 100644
          if detail.game.state.needsHelp { openHelp(detail.id); return }
          switch detail.game.state {
          case .playable: actions.onPlay(detail.id)
-@@ -376,6 +475,40 @@ public struct LibraryView: View {
+@@ -376,9 +478,47 @@ public struct LibraryView: View {
          case .broken: actions.onShowLog(detail.id)
          }
      }
@@ -2822,9 +2939,12 @@ index eb5e2ef..ced09bc 100644
 +        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { webGame = nil; boxOpen = false; infoOpen = false }
 +    }
 +    /// The selector: the platform's games, the first of them chosen.
-+    private func choosePlatform(_ name: String) {
++    private func choosePlatform(_ name: String, step: Int? = nil) {
 +        guard name != platform, platforms.contains(name) else { return }
-+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
++        // The slide goes the way of the shoulder button, or of the segment tapped in the selector.
++        platformStep = step ?? ((platforms.firstIndex(of: name) ?? 0) > (platforms.firstIndex(of: platform) ?? 0) ? 1 : -1)
++        NavSound.shift()
++        withAnimation(reduceMotion ? nil : .smooth(duration: 0.42)) {
 +            platform = name
 +            boxOpen = false; infoOpen = false; shotIndex = nil; settingsOpen = false
 +            if let first = allGames.first(where: { $0.game.platform == name }) {
@@ -2836,12 +2956,16 @@ index eb5e2ef..ced09bc 100644
 +    }
 +    private func stepPlatform(_ by: Int) {
 +        guard platforms.count > 1, let index = platforms.firstIndex(of: platform) else { return }
-+        choosePlatform(platforms[(index + by + platforms.count) % platforms.count])
++        choosePlatform(platforms[(index + by + platforms.count) % platforms.count], step: by < 0 ? -1 : 1)
 +    }
      private func select(_ id: String) {
          noteTouch()
          guard id != selectedID else { return }
-@@ -406,7 +539,60 @@ public struct LibraryView: View {
++        NavSound.tick()
+         selectedID = id
+         actions.onSelect(id)
+         settingsPosition.scrollTo(edge: .top)
+@@ -406,7 +546,60 @@ public struct LibraryView: View {
      }
      private func closeSettings() {
          settingsOpen = false
@@ -2903,7 +3027,7 @@ index eb5e2ef..ced09bc 100644
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -493,7 +679,9 @@ public struct LibraryView: View {
+@@ -493,7 +686,9 @@ public struct LibraryView: View {
          focus.id = "ctl.test"
      }
      private func back() {
@@ -2914,7 +3038,7 @@ index eb5e2ef..ced09bc 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -502,11 +690,25 @@ public struct LibraryView: View {
+@@ -502,11 +697,25 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -2940,7 +3064,7 @@ index eb5e2ef..ced09bc 100644
          // Every controller button belongs to the button test while it is open: it closes on B held, touch or Escape.
          if buttonTestOpen, case .controller = source { return }
          if device != source { device = source }
-@@ -522,6 +724,11 @@ public struct LibraryView: View {
+@@ -522,6 +731,11 @@ public struct LibraryView: View {
          case .settings: openSettings()
          case .controllers: openControllers()
          case .left, .right:
@@ -2952,7 +3076,7 @@ index eb5e2ef..ced09bc 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -541,6 +748,8 @@ public struct LibraryView: View {
+@@ -541,6 +755,8 @@ public struct LibraryView: View {
          if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
      }
      private var defaultFocus: String? {
@@ -2961,7 +3085,7 @@ index eb5e2ef..ced09bc 100644
          if buttonTestOpen { return "test.close" }
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
-@@ -549,6 +758,7 @@ public struct LibraryView: View {
+@@ -549,6 +765,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -2969,6 +3093,100 @@ index eb5e2ef..ced09bc 100644
          return selected.map { "lib.tile.\($0.id)" } ?? "lib.controllers"
      }
  }
+diff --git a/frontend-ios/Sources/ShellUI/NavSound.swift b/frontend-ios/Sources/ShellUI/NavSound.swift
+new file mode 100644
+index 0000000..1a98783
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/NavSound.swift
+@@ -0,0 +1,88 @@
++import AVFoundation
++import Foundation
++
++/// The library's small sounds, made here as samples like the card's click (no sound file): a light plastic tick as the next box
++/// comes to the middle, and a lower, fuller knock when the shoulder buttons change the console. Quiet, in the same playback session
++/// as the insertion, so they are heard with the ring/silent switch on, as a console's menu sounds are.
++@MainActor enum NavSound {
++    private static var tickPlayer: AVAudioPlayer?
++    private static var shiftPlayer: AVAudioPlayer?
++    /// The last tick, so a held D-pad or a fast scroll does not stack clicks closer than a console's menu would.
++    private static var lastTick = Date.distantPast
++
++    static func tick() {
++        let now = Date()
++        guard now.timeIntervalSince(lastTick) > 0.045 else { return }
++        lastTick = now
++        if tickPlayer == nil { tickPlayer = player(tickSamples(rate: 44_100), volume: 0.32) }
++        replay(tickPlayer)
++    }
++
++    static func shift() {
++        if shiftPlayer == nil { shiftPlayer = player(shiftSamples(rate: 44_100), volume: 0.5) }
++        replay(shiftPlayer)
++    }
++
++    private static func player(_ samples: [Float], volume: Float) -> AVAudioPlayer? {
++        #if os(iOS)
++        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
++        try? AVAudioSession.sharedInstance().setActive(true)
++        #endif
++        let p = try? AVAudioPlayer(data: InsertSound.wav(samples))
++        p?.volume = volume
++        p?.prepareToPlay()
++        return p
++    }
++    private static func replay(_ p: AVAudioPlayer?) {
++        p?.currentTime = 0
++        p?.play()
++    }
++
++    /// About 35 ms: a breath of noise, then a short bright click of hard plastic.
++    static func tickSamples(rate: Int) -> [Float] {
++        let count = Int(Double(rate) * 0.035)
++        var out = [Float](repeating: 0, count: count)
++        var seed: UInt32 = 0x1B87_3593
++        func noise() -> Float {
++            seed = seed &* 1_664_525 &+ 1_013_904_223
++            return Float(Int32(bitPattern: seed)) / Float(Int32.max)
++        }
++        for i in 0..<count {
++            let t = Double(i) / Double(rate)
++            var v: Float = 0
++            if t < 0.006 { v += noise() * 0.12 * Float(t / 0.006) }
++            if t >= 0.006 {
++                let u = t - 0.006
++                v += Float(exp(-u / 0.0018)) * (0.55 * Float(sin(2 * .pi * 2_400 * u)) + 0.2 * noise())
++                v += Float(exp(-u / 0.006)) * 0.18 * Float(sin(2 * .pi * 900 * u))
++            }
++            out[i] = max(-1, min(1, v))
++        }
++        return out
++    }
++
++    /// About 140 ms: a soft click, then a low rounded knock that settles, as a heavier part sliding into place.
++    static func shiftSamples(rate: Int) -> [Float] {
++        let count = Int(Double(rate) * 0.14)
++        var out = [Float](repeating: 0, count: count)
++        var seed: UInt32 = 0x85EB_CA6B
++        func noise() -> Float {
++            seed = seed &* 1_664_525 &+ 1_013_904_223
++            return Float(Int32(bitPattern: seed)) / Float(Int32.max)
++        }
++        var low: Float = 0
++        for i in 0..<count {
++            let t = Double(i) / Double(rate)
++            var v: Float = 0
++            low += (noise() - low) * 0.1
++            if t < 0.012 { v += low * 0.6 * Float(t / 0.012) }
++            if t >= 0.012 {
++                let u = t - 0.012
++                v += Float(exp(-u / 0.002)) * 0.3 * Float(sin(2 * .pi * 1_600 * u))
++                v += Float(exp(-u / 0.04)) * (0.55 * Float(sin(2 * .pi * 190 * u)) + 0.2 * Float(sin(2 * .pi * 380 * u)))
++            }
++            out[i] = max(-1, min(1, v))
++        }
++        return out
++    }
++}
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 index 2a2db87..3d4330a 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
@@ -5536,7 +5754,7 @@ index 4533d0e..3c60309 100644
                  onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                  onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
 diff --git a/frontend-ios/Sources/ShellUI/ShellStyle.swift b/frontend-ios/Sources/ShellUI/ShellStyle.swift
-index 99ecd78..97ac6f6 100644
+index 99ecd78..c1a0417 100644
 --- a/frontend-ios/Sources/ShellUI/ShellStyle.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellStyle.swift
 @@ -232,9 +232,17 @@ struct ArtView: View {
@@ -5603,6 +5821,45 @@ index 99ecd78..97ac6f6 100644
      }
  }
  
+@@ -480,3 +516,38 @@ extension EnvironmentValues {
+         set { self[ShellHelpKey.self] = newValue }
+     }
+ }
++
++/// The light of a game: the hue of its cover, as light rather than paint. The chosen box glows in it and the library's backdrop
++/// takes a halo of it behind the box, so the screen changes colour with the game.
++struct GameLight: Equatable {
++    var hue: Double
++    var saturation: Double
++    var color: Color { Color(hue: hue, saturation: saturation, brightness: 1) }
++
++    /// From the picture's mean colour (sRGB, 0 to 1): its hue, saturated enough to read as coloured light. A grey picture (black
++    /// and white art) stays a soft white instead of taking a random hue.
++    init(red r: Double, green g: Double, blue b: Double) {
++        let top = max(r, g, b), bottom = min(r, g, b), range = top - bottom
++        var h = 0.0
++        if range > 0.0001 {
++            if top == r { h = (g - b) / range } else if top == g { h = (b - r) / range + 2 } else { h = (r - g) / range + 4 }
++            h /= 6
++            if h < 0 { h += 1 }
++        }
++        let s = top > 0 ? range / top : 0
++        hue = h
++        saturation = s < 0.08 ? s : min(0.85, max(0.5, s * 1.4))
++    }
++    /// A game without a picture: the hue its placeholder cover is drawn in.
++    init(seed: String) {
++        hue = Double(stableHash(seed) % 360) / 360
++        saturation = 0.6
++    }
++}
++
++extension GameTile {
++    var light: GameLight {
++        if let tone = (banner ?? icon)?.tone { return GameLight(red: tone.red, green: tone.green, blue: tone.blue) }
++        return GameLight(seed: id)
++    }
++}
 diff --git a/frontend-ios/Sources/ShellUI/WebGameView.swift b/frontend-ios/Sources/ShellUI/WebGameView.swift
 new file mode 100644
 index 0000000..a9a8d00
@@ -6129,6 +6386,55 @@ index 1c29841..a647667 100644
      @Test func versionHasItsWord() {
          #expect(ShellFormat.version("1.0.0") == "Version 1.0.0")
          #expect(ShellFormat.version("") == "")
+diff --git a/frontend-ios/Tests/ShellUITests/LibraryLookTests.swift b/frontend-ios/Tests/ShellUITests/LibraryLookTests.swift
+new file mode 100644
+index 0000000..c00c351
+--- /dev/null
++++ b/frontend-ios/Tests/ShellUITests/LibraryLookTests.swift
+@@ -0,0 +1,43 @@
++import Foundation
++import Testing
++@testable import ShellUI
++
++/// The library's light and sounds: a cover's hue becomes the light, a grey cover a white one, and the made-up sounds stay in range.
++@Suite struct LibraryLookTests {
++    @Test func aRedCoverGivesARedLight() {
++        let light = GameLight(red: 0.6, green: 0.1, blue: 0.1)
++        #expect(light.hue < 0.01 || light.hue > 0.99)
++        #expect(light.saturation >= 0.5 && light.saturation <= 0.85)
++    }
++
++    @Test func aBlueCoverGivesABlueLight() {
++        let light = GameLight(red: 0.1, green: 0.2, blue: 0.5)
++        #expect(abs(light.hue - 0.625) < 0.02)
++    }
++
++    @Test func aDullCoverIsSaturatedEnoughToReadAsLight() {
++        // A muddy green mean colour still lights the screen green.
++        let light = GameLight(red: 0.3, green: 0.36, blue: 0.3)
++        #expect(light.saturation >= 0.5)
++        #expect(abs(light.hue - 1.0 / 3) < 0.02)
++    }
++
++    @Test func aGreyCoverStaysWhite() {
++        let light = GameLight(red: 0.4, green: 0.4, blue: 0.41)
++        #expect(light.saturation < 0.08)
++        #expect(GameLight(red: 0, green: 0, blue: 0).saturation == 0)
++    }
++
++    @Test func aGameWithoutPictureHasAStableLight() {
++        #expect(GameLight(seed: "0100000000010000") == GameLight(seed: "0100000000010000"))
++    }
++
++    @MainActor @Test func theNavigationSoundsStayInRange() {
++        for samples in [NavSound.tickSamples(rate: 44_100), NavSound.shiftSamples(rate: 44_100)] {
++            #expect(!samples.isEmpty)
++            #expect(samples.allSatisfy { $0 >= -1 && $0 <= 1 })
++            #expect(samples.contains { abs($0) > 0.1 })
++        }
++        #expect(NavSound.tickSamples(rate: 44_100).count < NavSound.shiftSamples(rate: 44_100).count)
++    }
++}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
 index 0000000..da2118d
