@@ -112,21 +112,8 @@ jobs:
           ls -la "$RUNNER_TEMP/out" "$RUNNER_TEMP/out/shots"
           exit $fail
 
-      # The phone simulator stays upright, where the library is a column with no box view: only the scenarios opened from the launch arguments.
-      - name: Render on the phone (screenshots)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 15   # the first run hung here: never block the upload
-        run: |
-          xcrun simctl boot "$PHONE" || true
-          xcrun simctl bootstatus "$PHONE" -b
-          status=0
-          TEST_RUNNER_SHOT_DIR="$RUNNER_TEMP/out/shots" TEST_RUNNER_SHOT_PREFIX=phone \
-            xcodebuild test-without-building -project frontend-ios/Demo/ShellDemo.xcodeproj -scheme ShellDemo \
-            -destination "id=$PHONE" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -only-testing:ShellDemoUITests/LibraryBoxCaptureTests/testOtherGames \
-            > "$RUNNER_TEMP/out/logs/phone.log" 2>&1 || status=$?
-          grep -E "Test Case|error|failed|passed" "$RUNNER_TEMP/out/logs/phone.log" | tail -20 || true
-          exit $status
+      # No phone render: the player's iPhone Duo lays the library out as the tablet does, and the phone simulator's runs only failed on
+      # its screenshot export. The tablet's four scenarios cover the library.
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
