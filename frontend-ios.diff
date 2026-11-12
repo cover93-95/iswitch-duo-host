@@ -91,7 +91,7 @@ index 9b4bf13..4e2c215 100644
          let key = "\(id).\(lettering)"
          if let art = cache[key] { return art }
 diff --git a/frontend-ios/Sources/ShellDemo/SampleData.swift b/frontend-ios/Sources/ShellDemo/SampleData.swift
-index ac4358f..508d302 100644
+index ac4358f..530dcd8 100644
 --- a/frontend-ios/Sources/ShellDemo/SampleData.swift
 +++ b/frontend-ios/Sources/ShellDemo/SampleData.swift
 @@ -27,7 +27,49 @@ func demoText(_ key: String.LocalizationValue) -> String {
@@ -145,7 +145,7 @@ index ac4358f..508d302 100644
              GameDetail(game: tile, sections: [
                  SettingSection(id: "game", title: demoText("Game"), rows: [
                      SettingRow(id: "DM_OPERATION_MODE", label: demoText("Play mode"), note: demoText("The game's display and performance profile."), kind: .choice([SettingOption("handheld", demoText("Handheld")), SettingOption("docked", demoText("Docked"))]), value: "handheld"),
-@@ -47,6 +89,27 @@ func demoText(_ key: String.LocalizationValue) -> String {
+@@ -47,6 +89,30 @@ func demoText(_ key: String.LocalizationValue) -> String {
                         cloudFromShell: tile.id == "orbit")
          }
      }
@@ -163,6 +163,9 @@ index ac4358f..508d302 100644
 +            tile.backdrop = tile.banner ?? tile.icon   // the demo has no world picture: its own art stands in, sharp
 +            // --still: no particles, for the UI tests that tap a lot (an endless animation keeps the app from going idle between taps)
 +            if !ProcessInfo.processInfo.arguments.contains("--still") { tile.ambience = .sparkles }
++            // --ambience <word>: another ambience on the first game, for the review of each one
++            let args = ProcessInfo.processInfo.arguments
++            if let at = args.firstIndex(of: "--ambience"), at + 1 < args.count { tile.ambience = Ambience(text: args[at + 1]) }
 +            tile.synopsis = demoText("A valley of floating islands, a lost compass and a sky that never stays still. Climb, glide and solve old shrines to bring the orbit back.")
 +            tile.screens = SampleScreens.files(for: tile.id)
 +        case "tide": tile.stats = PlayStats(launches: 2, seconds: 47 * 60, lastPlayed: Date().addingTimeInterval(-86_400))
@@ -751,10 +754,10 @@ index 0000000..fa3b059
 +}
 diff --git a/frontend-ios/Sources/ShellUI/AmbienceLayer.swift b/frontend-ios/Sources/ShellUI/AmbienceLayer.swift
 new file mode 100644
-index 0000000..3e801ea
+index 0000000..fe85c8a
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/AmbienceLayer.swift
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,183 @@
 +import SwiftUI
 +
 +/// A game's ambience: a few slow particles over its backdrop, chosen per game (`ambience.txt` in its framework). Off with
@@ -772,6 +775,22 @@ index 0000000..3e801ea
 +    case shards
 +    /// An old film's grain, with a scratch now and then.
 +    case grain
++    /// Glowing fairies that fly about with a trail (Zelda).
++    case fairies
++    /// Snow falling slantwise at several depths.
++    case snow
++    /// Neon light trails speeding past, a city's glow at the bottom.
++    case neon
++    /// A fighter's aura: sparks of energy rising, a surge now and then.
++    case aura
++    /// Slanting rain and distant lightning.
++    case rain
++    /// A night city's soft round lights, out of focus, drifting.
++    case bokeh
++    /// Green ghostly wisps that rise, float and fade.
++    case wisps
++    /// Embers rising and flickering.
++    case embers
 +
 +    /// The word in `ambience.txt`, any case, spaces and line ends ignored. Anything else is none.
 +    public init(text: String?) {
@@ -792,6 +811,14 @@ index 0000000..3e801ea
 +                    case .clouds: Self.clouds(&context, size, t)
 +                    case .shards: Self.shards(&context, size, t)
 +                    case .grain: Self.grain(&context, size, t)
++                    case .fairies: Self.fairies(&context, size, t)
++                    case .snow: Self.snow(&context, size, t)
++                    case .neon: Self.neon(&context, size, t)
++                    case .aura: Self.aura(&context, size, t)
++                    case .rain: Self.rain(&context, size, t)
++                    case .bokeh: Self.bokeh(&context, size, t)
++                    case .wisps: Self.wisps(&context, size, t)
++                    case .embers: Self.embers(&context, size, t)
 +                    case .none: break
 +                    }
 +                }
@@ -912,6 +939,175 @@ index 0000000..3e801ea
 +        // The slight flicker of a projector.
 +        let flicker = 0.025 * (0.5 + 0.5 * sin(t * 23))
 +        context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(flicker)))
++    }
++}
+diff --git a/frontend-ios/Sources/ShellUI/AmbienceMore.swift b/frontend-ios/Sources/ShellUI/AmbienceMore.swift
+new file mode 100644
+index 0000000..b975141
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/AmbienceMore.swift
+@@ -0,0 +1,163 @@
++import SwiftUI
++
++/// The ambiences made for particular games: fairies (Zelda), snow (a snowboard game), neon trails (night street racing), a fighter's
++/// aura, rain with distant lightning, a city's soft bokeh, ghostly wisps and rising embers. Light is added, never painted over, so
++/// they glow on the veiled backdrop as the reviewed previews did.
++extension AmbienceLayer {
++    /// A soft round light of radius `r`, bright in the middle and falling off quickly, added to what is under it.
++    private static func light(_ context: inout GraphicsContext, _ x: Double, _ y: Double, _ r: Double, _ color: Color, _ alpha: Double) {
++        guard alpha > 0.01, r > 0.3 else { return }
++        let p = CGPoint(x: x, y: y)
++        context.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
++                     with: .radialGradient(Gradient(stops: [.init(color: color.opacity(min(1, alpha)), location: 0),
++                                                            .init(color: color.opacity(min(1, alpha) * 0.25), location: 0.5),
++                                                            .init(color: color.opacity(0), location: 1)]),
++                                           center: p, startRadius: 0, endRadius: r))
++    }
++    /// A streak from `a` to `b`, faint at its tail and bright at its head.
++    private static func streak(_ context: inout GraphicsContext, _ a: CGPoint, _ b: CGPoint, width: Double, _ color: Color, _ alpha: Double) {
++        guard alpha > 0.01 else { return }
++        var path = Path()
++        path.move(to: a)
++        path.addLine(to: b)
++        context.stroke(path, with: .linearGradient(Gradient(colors: [color.opacity(0), color.opacity(min(1, alpha))]), startPoint: a, endPoint: b),
++                       style: StrokeStyle(lineWidth: width, lineCap: .round))
++    }
++
++    static func fairies(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        let halo = Color(red: 0.55, green: 0.8, blue: 1), glowColor = Color(red: 0.85, green: 0.95, blue: 1), trail = Color(red: 0.75, green: 0.92, blue: 1)
++        for i in 0..<4 {
++            func pos(_ tt: Double) -> (Double, Double) {
++                let x = 0.5 + 0.36 * sin(tt * (0.23 + noise(i, 1) * 0.2) + noise(i, 2) * 6.28) + 0.05 * sin(tt * (1.7 + noise(i, 3)) + Double(i))
++                let y = 0.42 + 0.26 * sin(tt * (0.31 + noise(i, 4) * 0.2) + noise(i, 5) * 6.28) + 0.04 * cos(tt * (2.1 + noise(i, 6)) + Double(i))
++                return (x * size.width, y * size.height)
++            }
++            let pulse = 0.75 + 0.25 * sin(t * 6 + Double(i) * 2)
++            for k in stride(from: 14, to: 0, by: -1) {
++                let (px, py) = pos(t - Double(k) * 0.035)
++                light(&context, px, py, unit * 0.009 * (1 - Double(k) / 16), trail, 0.5 * (1 - Double(k) / 15))
++            }
++            let (x, y) = pos(t)
++            light(&context, x, y, unit * 0.1, halo, 0.35 * pulse)
++            light(&context, x, y, unit * 0.03, glowColor, 0.8 * pulse)
++            light(&context, x, y, unit * 0.011, .white, 1)
++        }
++    }
++
++    static func snow(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        for i in 0..<110 {
++            let depth = noise(i, 1)
++            let y = wrap(noise(i, 2) + t * (0.05 + depth * 0.12))
++            let x = wrap(noise(i, 3) + t * 0.02 * (0.5 + depth) + 0.012 * sin(t * (0.8 + noise(i, 4)) + Double(i)))
++            light(&context, x * size.width, y * size.height, unit * (0.002 + depth * 0.006) * 2.2, .white, 0.35 + 0.5 * depth)
++        }
++    }
++
++    static func neon(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        let colors = [Color(red: 1, green: 0.25, blue: 0.75), Color(red: 0.2, green: 0.9, blue: 1), Color(red: 0.65, green: 0.35, blue: 1)]
++        // The city's glow along the bottom, breathing.
++        let band = CGRect(x: 0, y: size.height * 0.74, width: size.width, height: size.height * 0.24)
++        let breath = 0.07 + 0.03 * sin(t * 1.3)
++        context.fill(Path(band), with: .linearGradient(Gradient(colors: [.clear, Color(red: 0.7, green: 0.3, blue: 0.9).opacity(breath), .clear]),
++                                                       startPoint: CGPoint(x: 0, y: band.minY), endPoint: CGPoint(x: 0, y: band.maxY)))
++        for i in 0..<12 {
++            let x = wrap(noise(i, 2) + t * (0.18 + noise(i, 1) * 0.35)) * 1.4 - 0.2
++            let y = (0.55 + noise(i, 3) * 0.4) * size.height
++            let length = 0.08 + noise(i, 4) * 0.16
++            let color = colors[i % colors.count]
++            let head = CGPoint(x: x * size.width, y: y), tail = CGPoint(x: (x - length) * size.width, y: y)
++            streak(&context, tail, head, width: unit * 0.016, color, 0.22)
++            streak(&context, tail, head, width: unit * 0.005, color, 0.75)
++            light(&context, head.x, head.y, unit * 0.02, color, 0.35)
++        }
++    }
++
++    static func aura(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        let flare = pow(max(0, sin(t * 2.1)), 8)                 // a surge now and then
++        light(&context, size.width * 0.5, size.height * 0.85, unit * 0.7, Color(red: 1, green: 0.7, blue: 0.2), 0.12 + 0.18 * flare)
++        let spark = Color(red: 1, green: 0.82, blue: 0.35), core = Color(red: 1, green: 1, blue: 0.9)
++        for i in 0..<40 {
++            let y = 1 - wrap(noise(i, 2) + t * (0.15 + noise(i, 1) * 0.25 + flare * 0.1))
++            let x = (noise(i, 3) + 0.015 * sin(t * 3 + Double(i))) * size.width
++            let fade = min(1, y * 3) * min(1, (1 - y) * 6)
++            streak(&context, CGPoint(x: x, y: (y + 0.035) * size.height), CGPoint(x: x, y: y * size.height), width: unit * 0.007, spark, fade)
++            light(&context, x, y * size.height, unit * 0.007, core, fade)
++        }
++    }
++
++    static func rain(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let drop = Color(red: 0.8, green: 0.86, blue: 1)
++        for i in 0..<140 {
++            let speed = 1.3 + noise(i, 1) * 0.6
++            let y = wrap(noise(i, 2) + t * speed)
++            let x = wrap(noise(i, 3) + t * speed * 0.18)
++            let length = 0.04 + noise(i, 4) * 0.03
++            streak(&context, CGPoint(x: (x - length * 0.18) * size.width, y: (y - length) * size.height),
++                   CGPoint(x: x * size.width, y: y * size.height), width: 1.6, drop, 0.4 + 0.3 * noise(i, 5))
++        }
++        // Distant lightning, about every 6 s: a flash and a fainter second one.
++        let phase = wrap(t / 6.5)
++        let flash = max(0, 1 - abs(phase - 0.5) / 0.012) + 0.6 * max(0, 1 - abs(phase - 0.53) / 0.01)
++        if flash > 0 {
++            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(red: 0.75, green: 0.8, blue: 1).opacity(0.3 * flash)))
++        }
++    }
++
++    static func bokeh(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        let colors = [Color(red: 1, green: 0.35, blue: 0.65), Color(red: 0.2, green: 0.85, blue: 0.85), Color(red: 1, green: 0.6, blue: 0.3)]
++        for i in 0..<16 {
++            let x = wrap(noise(i, 1) + t * 0.012 * (noise(i, 2) - 0.5))
++            let y = wrap(noise(i, 3) - t * 0.01 * (0.3 + noise(i, 4)))
++            let alpha = 0.3 + 0.15 * sin(t * (0.5 + noise(i, 6)) + Double(i))
++            light(&context, x * size.width, y * size.height, unit * (0.035 + noise(i, 5) * 0.06), colors[i % colors.count], alpha)
++        }
++    }
++
++    static func wisps(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        let green = Color(red: 0.5, green: 1, blue: 0.6), halo = Color(red: 0.35, green: 1, blue: 0.5), core = Color(red: 0.8, green: 1, blue: 0.85)
++        for i in 0..<6 {
++            let period = 6 + noise(i, 1) * 4
++            let life = pow(sin(wrap(t / period + noise(i, 2)) * .pi), 2)
++            func pos(_ tt: Double) -> (Double, Double) {
++                let x = noise(i, 3) * 0.8 + 0.1 + 0.06 * sin(tt * (0.7 + noise(i, 4)) + Double(i))
++                let y = 0.75 - 0.4 * wrap(tt / period + noise(i, 2)) + 0.03 * sin(tt * 2 + Double(i))
++                return (x * size.width, y * size.height)
++            }
++            for k in stride(from: 8, to: 0, by: -1) {
++                let (px, py) = pos(t - Double(k) * 0.08)
++                light(&context, px, py, unit * 0.012 * (1 - Double(k) / 10), green, 0.25 * life * (1 - Double(k) / 9))
++            }
++            let (x, y) = pos(t)
++            light(&context, x, y, unit * 0.06, halo, 0.25 * life)
++            light(&context, x, y, unit * 0.016, core, 0.75 * life)
++        }
++    }
++
++    static func embers(_ context: inout GraphicsContext, _ size: CGSize, _ t: Double) {
++        context.blendMode = .plusLighter
++        let unit = min(size.width, size.height)
++        let red = Color(red: 1, green: 0.35, blue: 0.05), hot = Color(red: 1, green: 0.75, blue: 0.35)
++        for i in 0..<45 {
++            let y = 1 - wrap(noise(i, 2) + t * (0.06 + noise(i, 1) * 0.1))
++            let x = noise(i, 3) + 0.03 * sin(t * (0.9 + noise(i, 4)) + Double(i) * 1.7) + 0.01 * sin(t * 5 + Double(i))
++            let flicker = 0.6 + 0.4 * sin(t * (7 + noise(i, 5) * 6) + Double(i))
++            let fade = min(1, y * 2.5) * min(1, (1 - y) * 5)
++            let r = unit * (0.0025 + noise(i, 6) * 0.004)
++            light(&context, x * size.width, y * size.height, r * 5, red, 0.3 * flicker * fade)
++            light(&context, x * size.width, y * size.height, r * 1.6, hot, 0.9 * flicker * fade)
++        }
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/BoxTurn.swift b/frontend-ios/Sources/ShellUI/BoxTurn.swift
@@ -7290,10 +7486,10 @@ index 0000000..0d3dc93
 +}
 diff --git a/frontend-ios/Tests/ShellUITests/AmbienceTests.swift b/frontend-ios/Tests/ShellUITests/AmbienceTests.swift
 new file mode 100644
-index 0000000..4371e05
+index 0000000..31bb71f
 --- /dev/null
 +++ b/frontend-ios/Tests/ShellUITests/AmbienceTests.swift
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,34 @@
 +import Foundation
 +import Testing
 +@testable import ShellUI
@@ -7306,6 +7502,9 @@ index 0000000..4371e05
 +        #expect(Ambience(text: "CLOUDS\n") == .clouds)
 +        #expect(Ambience(text: "shards") == .shards)
 +        #expect(Ambience(text: "grain") == .grain)
++        for word in ["fairies", "snow", "neon", "aura", "rain", "bokeh", "wisps", "embers"] {
++            #expect(Ambience(text: word + "\n").rawValue == word)
++        }
 +    }
 +
 +    @Test func anythingElseIsNone() {
@@ -7458,10 +7657,10 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..1ea4d98
+index 0000000..f72ebbd
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,317 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -7767,5 +7966,15 @@ index 0000000..1ea4d98
 +        XCTAssertFalse(end.exists, "a button did not end the showcase")
 +        XCTAssertEqual(title.label, first, "the showcase did not bring back the game it started from")
 +        shot("showcase-03-back")
++    }
++
++    /// Each game ambience drawn on the library's backdrop, captured twice a moment apart, for review.
++    func testAmbiences() {
++        for word in ["fairies", "snow", "neon", "aura", "rain", "bokeh", "wisps", "embers"] {
++            launch(["--screen", "library", "--ambience", word])
++            shot("ambience-\(word)-1")
++            usleep(700_000)
++            shot("ambience-\(word)-2")
++        }
 +    }
 +}
