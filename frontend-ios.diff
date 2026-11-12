@@ -1287,10 +1287,10 @@ index 8651917..fae2552 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..8583005
+index 0000000..21a18de
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,612 @@
+@@ -0,0 +1,617 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1306,6 +1306,8 @@ index 0000000..8583005
 +    let insert: () -> Void
 +    let showInfo: () -> Void
 +    let close: () -> Void
++    /// Play from the info panel: once the box has opened, the card goes in by itself (the same animation and sound as a tap on it).
++    var autoInsert = false
 +    /// The box has come forward.
 +    @State private var shown = false
 +    @State private var opened = false
@@ -1450,9 +1452,12 @@ index 0000000..8583005
 +
 +    private func present() {
 +        if playable { InsertSound.prepare(disc: game.isDisc, cart64: game.isCart64) }
-+        if reduceMotion { shown = true; opened = true; return }
++        if reduceMotion { shown = true; opened = true; if autoInsert { play() }; return }
 +        withAnimation(.spring(duration: 0.6, bounce: 0.18)) { shown = true }
-+        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { opened = true }
++        withAnimation(.easeInOut(duration: 1.05).delay(0.5)) { opened = true } completion: {
++            // A short look at the open box, then the card goes in.
++            if autoInsert { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { play() } }
++        }
 +    }
 +    /// The game, from the black screen. A game that does not start leaves the box here: after a moment the screen comes back and
 +    /// the card is in the tray again, for another try or to leave.
@@ -2554,7 +2559,7 @@ index 0000000..4550465
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index eb5e2ef..fef0e2b 100644
+index eb5e2ef..ced09bc 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -29,7 +29,8 @@ enum ShellLayout: Equatable {
@@ -2567,7 +2572,7 @@ index eb5e2ef..fef0e2b 100644
      public let controllers: [ControllerInfo]
      public let globalPadMap: PadMap
      /// The controller's state while the button test is open, from the host.
-@@ -37,6 +38,15 @@ public struct LibraryView: View {
+@@ -37,6 +38,17 @@ public struct LibraryView: View {
      public var actions: ShellActions
      public var input: ShellInput?
      @State private var selectedID: String?
@@ -2580,10 +2585,12 @@ index eb5e2ef..fef0e2b 100644
 +    @State private var webStarted: Date?
 +    /// The info panel's tab: 0 Overview, 1 Your play. L and R step through them while the panel is open.
 +    @State private var infoTab = 0
++    /// The box was opened by Play in the info panel: its card goes in by itself.
++    @State private var boxAutoInsert = false
      @State private var settingsOpen: Bool
      @State private var shellSettingsOpen: Bool
      @State private var controllersOpen: Bool
-@@ -50,6 +60,11 @@ public struct LibraryView: View {
+@@ -50,6 +62,11 @@ public struct LibraryView: View {
      /// The button-mapping card, while open.
      @State private var padMapping: PadMappingState?
      @State private var buttonTestOpen: Bool
@@ -2595,7 +2602,7 @@ index eb5e2ef..fef0e2b 100644
      @State private var focus: FocusAppearance
      @State private var targets = FocusTargetBuffer()
      @State private var settingsPosition = ScrollPosition()
-@@ -66,22 +81,29 @@ public struct LibraryView: View {
+@@ -66,22 +83,29 @@ public struct LibraryView: View {
      @FocusState private var keyboardFocus: Bool
      @Environment(\.accessibilityReduceMotion) private var reduceMotion
      @Environment(\.dynamicTypeSize) private var typeSize
@@ -2627,7 +2634,7 @@ index eb5e2ef..fef0e2b 100644
          _settingsOpen = State(initialValue: initialDetailOpen)
          _controllersOpen = State(initialValue: initialControllersOpen)
          _shellSettingsOpen = State(initialValue: initialShellSettingsOpen)
-@@ -89,6 +111,14 @@ public struct LibraryView: View {
+@@ -89,6 +113,14 @@ public struct LibraryView: View {
          _touchMode = State(initialValue: !initialFocusVisible)
      }
      private var selected: GameDetail? { games.first { $0.id == selectedID } ?? games.first }
@@ -2642,7 +2649,7 @@ index eb5e2ef..fef0e2b 100644
  
      public var body: some View {
          GeometryReader { geometry in
-@@ -104,7 +134,9 @@ public struct LibraryView: View {
+@@ -104,7 +136,9 @@ public struct LibraryView: View {
              let paneCovers = settingsOpen && !floating
              let panelOverLibrary = settingsOpen && floating
              ZStack(alignment: .topLeading) {
@@ -2653,7 +2660,7 @@ index eb5e2ef..fef0e2b 100644
                  if games.isEmpty {
                      EmptyLibraryView()
                          .overlay(alignment: .topTrailing) {
-@@ -114,12 +146,40 @@ public struct LibraryView: View {
+@@ -114,12 +148,40 @@ public struct LibraryView: View {
                              }.padding(.top, 6).padding(.trailing, 16)
                          }
                  } else if let selected {
@@ -2673,7 +2680,7 @@ index eb5e2ef..fef0e2b 100644
 +                            .onTapGesture { closeInfo() }
 +                            .accessibilityHidden(true)
 +                            .transition(.opacity)
-+                        GameInfoPanel(detail: selected, primary: { primary(selected) }, openBox: openBox,
++                        GameInfoPanel(detail: selected, primary: { playFromInfo(selected) }, openBox: openBox,
 +                                      openSettings: openSettings, openScreenshot: openShot, close: closeInfo,
 +                                      setStatus: { actions.onSetStatus(selected.id, $0) },
 +                                      toggleFavourite: { actions.onToggleFavourite(selected.id) }, tab: $infoTab, showsHints: !touchMode)
@@ -2694,13 +2701,13 @@ index eb5e2ef..fef0e2b 100644
                      if panelOverLibrary {
                          // The same dimming and dismissal as the Controllers overlay.
                          Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
-@@ -147,6 +207,29 @@ public struct LibraryView: View {
+@@ -147,6 +209,29 @@ public struct LibraryView: View {
                          .accessibilityAddTraits(settingsOpen ? .isModal : [])
                          .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
                  }
 +                if boxOpen, let selected {
 +                    GameBoxView(game: selected.game, insert: { primary(selected) }, showInfo: { showInfoFromBox(selected) },
-+                                close: closeBox)
++                                close: closeBox, autoInsert: boxAutoInsert)
 +                        // Laid out in the safe area (its backdrop runs under the status bar by itself), so the title and Close
 +                        // stay clear of the clock and the battery.
 +                        .accessibilityAddTraits(.isModal)
@@ -2724,7 +2731,7 @@ index eb5e2ef..fef0e2b 100644
                  if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
                      Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
                          .onTapGesture { closeHelp() }
-@@ -235,13 +318,16 @@ public struct LibraryView: View {
+@@ -235,13 +320,16 @@ public struct LibraryView: View {
              .transformPreference(FocusTargets.self) { values in
                  values = values.filter { target in
                      if buttonTestOpen { return target.id.hasPrefix("test.") }
@@ -2742,7 +2749,7 @@ index eb5e2ef..fef0e2b 100644
                  }
              }
              .coordinateSpace(name: "shell")
-@@ -265,6 +351,9 @@ public struct LibraryView: View {
+@@ -265,6 +353,9 @@ public struct LibraryView: View {
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
@@ -2752,7 +2759,7 @@ index eb5e2ef..fef0e2b 100644
          .environment(\.shellPickChoice, { request in openChoice(request) })
          .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
          .environment(\.shellOpenButtonTest, { openButtonTest() })
-@@ -272,6 +361,10 @@ public struct LibraryView: View {
+@@ -272,6 +363,10 @@ public struct LibraryView: View {
          .environment(\.shellAskDelete, { game in openDelete(game.id) })
          .environment(\.shellFocus, focus)
          .environment(\.shellInputDevice, device)
@@ -2763,7 +2770,7 @@ index eb5e2ef..fef0e2b 100644
          .foregroundStyle(.white)
          .font(ShellFonts.font(15)).tint(ShellPalette.cream).preferredColorScheme(.dark)
          .onChange(of: input) { _, event in if let event { handle(event.action, from: event.device) } }
-@@ -289,15 +382,18 @@ public struct LibraryView: View {
+@@ -289,15 +384,18 @@ public struct LibraryView: View {
          .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
          .onDisappear { targets.values.removeAll() }
          .onChange(of: games.map(\.id)) { _, ids in
@@ -2785,7 +2792,7 @@ index eb5e2ef..fef0e2b 100644
                  .equatable()
                  .transition(.opacity)
          } else {
-@@ -368,6 +464,7 @@ public struct LibraryView: View {
+@@ -368,6 +466,7 @@ public struct LibraryView: View {
      }
      private func primary(_ detail: GameDetail) {
          noteTouch()
@@ -2793,7 +2800,7 @@ index eb5e2ef..fef0e2b 100644
          if detail.game.state.needsHelp { openHelp(detail.id); return }
          switch detail.game.state {
          case .playable: actions.onPlay(detail.id)
-@@ -376,6 +473,40 @@ public struct LibraryView: View {
+@@ -376,6 +475,40 @@ public struct LibraryView: View {
          case .broken: actions.onShowLog(detail.id)
          }
      }
@@ -2834,7 +2841,7 @@ index eb5e2ef..fef0e2b 100644
      private func select(_ id: String) {
          noteTouch()
          guard id != selectedID else { return }
-@@ -406,7 +537,48 @@ public struct LibraryView: View {
+@@ -406,7 +539,60 @@ public struct LibraryView: View {
      }
      private func closeSettings() {
          settingsOpen = false
@@ -2863,9 +2870,19 @@ index eb5e2ef..fef0e2b 100644
 +        boxOpen = false
 +        focus.id = selected.map { "lib.tile.\($0.id)" }
 +    }
-+    private func openBox() { noteTouch(); boxOpen = true; focus.id = "box.cart" }
++    private func openBox() { noteTouch(); boxAutoInsert = false; boxOpen = true; focus.id = "box.cart" }
++    /// Play in the info panel: a game that can start goes through its box, the card put in with its animation and sound, as a tap
++    /// on the box does; another state takes its way out at once.
++    private func playFromInfo(_ detail: GameDetail) {
++        guard detail.game.state == .playable else { primary(detail); return }
++        noteTouch()
++        boxAutoInsert = true
++        boxOpen = true
++        focus.id = "box.cart"
++    }
 +    private func closeBox() {
 +        boxOpen = false
++        boxAutoInsert = false
 +        focus.id = infoOpen ? "info.box" : selected.map { "lib.tile.\($0.id)" }
 +    }
 +    /// The centred cover: a game that can start opens its box, any other its info panel.
@@ -2874,17 +2891,19 @@ index eb5e2ef..fef0e2b 100644
 +        noteTouch()
 +        if detail.id != selectedID { select(detail.id) }
 +        infoOpen = false
++        boxAutoInsert = false
 +        boxOpen = true
 +        focus.id = "box.cart"
 +    }
 +    /// Game info from the box: the panel, with the box closed behind it.
 +    private func showInfoFromBox(_ detail: GameDetail) {
 +        boxOpen = false
++        boxAutoInsert = false
 +        openInfo(detail)
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -493,7 +665,9 @@ public struct LibraryView: View {
+@@ -493,7 +679,9 @@ public struct LibraryView: View {
          focus.id = "ctl.test"
      }
      private func back() {
@@ -2895,7 +2914,7 @@ index eb5e2ef..fef0e2b 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -502,11 +676,25 @@ public struct LibraryView: View {
+@@ -502,11 +690,25 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -2921,7 +2940,7 @@ index eb5e2ef..fef0e2b 100644
          // Every controller button belongs to the button test while it is open: it closes on B held, touch or Escape.
          if buttonTestOpen, case .controller = source { return }
          if device != source { device = source }
-@@ -522,6 +710,11 @@ public struct LibraryView: View {
+@@ -522,6 +724,11 @@ public struct LibraryView: View {
          case .settings: openSettings()
          case .controllers: openControllers()
          case .left, .right:
@@ -2933,7 +2952,7 @@ index eb5e2ef..fef0e2b 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -541,6 +734,8 @@ public struct LibraryView: View {
+@@ -541,6 +748,8 @@ public struct LibraryView: View {
          if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
      }
      private var defaultFocus: String? {
@@ -2942,7 +2961,7 @@ index eb5e2ef..fef0e2b 100644
          if buttonTestOpen { return "test.close" }
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
-@@ -549,6 +744,7 @@ public struct LibraryView: View {
+@@ -549,6 +758,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -6112,10 +6131,10 @@ index 1c29841..a647667 100644
          #expect(ShellFormat.version("") == "")
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..d3edb37
+index 0000000..da2118d
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,219 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -6265,6 +6284,15 @@ index 0000000..d3edb37
 +        for _ in 0..<6 { app.buttons["qa.input.down"].tap(); usleep(300_000) }
 +        sleep(1)
 +        shot("other-07-your-copy")
++        // Play in the info panel goes through the box: it opens, the card goes in by itself (captured) and the game is asked for.
++        launch(["--screen", "info", "--select", "orbit", "--still"])
++        app.buttons["info.play"].tap()
++        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
++        for index in 1...3 {
++            usleep(600_000)
++            shot("other-08-play-from-info-\(index)")
++        }
++        expectPlay("other-09-played-from-info")
 +    }
 +
 +    /// The platform selector at the top in the middle (a browser game under PS2), its box with a disc, the disc going in and the
