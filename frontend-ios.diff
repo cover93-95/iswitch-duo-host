@@ -51,10 +51,10 @@ index 9b4bf13..52b6b6c 100644
          let key = "\(id).\(lettering)"
          if let art = cache[key] { return art }
 diff --git a/frontend-ios/Sources/ShellDemo/SampleData.swift b/frontend-ios/Sources/ShellDemo/SampleData.swift
-index ac4358f..5fa3837 100644
+index ac4358f..299f186 100644
 --- a/frontend-ios/Sources/ShellDemo/SampleData.swift
 +++ b/frontend-ios/Sources/ShellDemo/SampleData.swift
-@@ -27,7 +27,31 @@ func demoText(_ key: String.LocalizationValue) -> String {
+@@ -27,7 +27,43 @@ func demoText(_ key: String.LocalizationValue) -> String {
              // Always fictional: the icon-only fallback, a square icon inside a wide card.
              SampleArt.tile("amber", title: "Amber Hours", version: "1.0.2", real: nil)
          ]
@@ -83,11 +83,23 @@ index ac4358f..5fa3837 100644
 +                tile.synopsis = demoText("A kart race in the valley, played in the browser.")
 +                return tile
 +            } : []
-+        return (tiles.map(withStats) + web + web64).map { tile in
++        // --web2: a Switch 2 game another app runs (Ocarina of Time in the Nintendo Switch 2 app), in a red case
++        let web2 = ProcessInfo.processInfo.arguments.contains("--web2")
++            ? [SampleArt.tile("orbit2", title: "Orbit Valley Deluxe", version: "Switch 2", real: nil)].map { tile -> GameTile in
++                var tile = tile
++                tile.platform = "Switch 2"
++                tile.webURL = URL(string: "iswitchduo-switch2://")
++                tile.subtitle = "Switch 2"
++                tile.banner = SampleArt.cover("orbit", ratio: 0.62)
++                tile.backdrop = tile.banner
++                tile.synopsis = demoText("A valley of floating islands, opened in its own app.")
++                return tile
++            } : []
++        return (tiles.map(withStats) + web2 + web + web64).map { tile in
              GameDetail(game: tile, sections: [
                  SettingSection(id: "game", title: demoText("Game"), rows: [
                      SettingRow(id: "DM_OPERATION_MODE", label: demoText("Play mode"), note: demoText("The game's display and performance profile."), kind: .choice([SettingOption("handheld", demoText("Handheld")), SettingOption("docked", demoText("Docked"))]), value: "handheld"),
-@@ -47,6 +71,27 @@ func demoText(_ key: String.LocalizationValue) -> String {
+@@ -47,6 +83,27 @@ func demoText(_ key: String.LocalizationValue) -> String {
                         cloudFromShell: tile.id == "orbit")
          }
      }
@@ -164,11 +176,15 @@ index 0000000..8a1e9e6
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
-index 5b7eba5..426084c 100644
+index 5b7eba5..7dd78c4 100644
 --- a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
 +++ b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
-@@ -58,7 +58,7 @@ struct DemoScreen: View {
-         .overlay(alignment: .bottom) {
+@@ -55,10 +55,10 @@ struct DemoScreen: View {
+         }
+         .background(ShellPalette.background)
+         // QA only: on-screen stand-ins for controller buttons, above everything so the art never takes their taps.
+-        .overlay(alignment: .bottom) {
++        .overlay(alignment: args.contains("--qa-top") ? .top : .bottom) {
              if args.contains("--input-test") {
                  HStack {
 -                    ForEach(["left", "right", "down", "up", "activate", "back", "settings"], id: \.self) { name in
@@ -381,7 +397,7 @@ index 0000000..88615ba
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellHost/ShellHostModel.swift b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
-index 02898cb..887b8d5 100644
+index 02898cb..aaa5dd8 100644
 --- a/frontend-ios/Sources/ShellHost/ShellHostModel.swift
 +++ b/frontend-ios/Sources/ShellHost/ShellHostModel.swift
 @@ -19,11 +19,13 @@ public struct ShellHostConfig: Sendable {
@@ -452,7 +468,7 @@ index 02898cb..887b8d5 100644
          }
      }
  
-@@ -154,20 +170,64 @@ public struct ShellHostConfig: Sendable {
+@@ -154,20 +170,66 @@ public struct ShellHostConfig: Sendable {
      /// a change to one game updates it in place.
      public func reload() {
          let scanned = GameCatalogue.scan(root: config.gamesRoot).filter { !isDeleted($0) }
@@ -471,7 +487,9 @@ index 02898cb..887b8d5 100644
          entries = scanned.sorted { position[$0.id] ?? 0 < position[$1.id] ?? 0 }
 -        details = built.sorted { position[$0.id] ?? 0 < position[$1.id] ?? 0 }
 +        // Browser games: favourites first, otherwise the catalogue's order.
-+        let web = WebGameCatalogue.scan(root: config.webGamesRoot)
++        // A Switch 2 game (another app) comes first, so its platform sits next to Switch in the selector.
++        let scanned2 = WebGameCatalogue.scan(root: config.webGamesRoot)
++        let web = scanned2.filter { $0.platform == "Switch 2" } + scanned2.filter { $0.platform != "Switch 2" }
 +        webEntries = web.filter { PlayStatsStore(defaults: config.defaults($0.id)).favourite } + web.filter { !PlayStatsStore(defaults: config.defaults($0.id)).favourite }
 +        webDetails = webEntries.map(webDetail(for:))
 +        details = built.sorted { position[$0.id] ?? 0 < position[$1.id] ?? 0 } + webDetails
@@ -521,7 +539,7 @@ index 02898cb..887b8d5 100644
      }
  
      private func entry(_ id: String) -> CatalogueEntry? { entries.first { $0.id == id } }
-@@ -209,6 +269,16 @@ public struct ShellHostConfig: Sendable {
+@@ -209,6 +271,16 @@ public struct ShellHostConfig: Sendable {
                                    global: shellData.resolve(), shellMatch: shellMatches[manifest.titleID])
      }
  
@@ -538,7 +556,7 @@ index 02898cb..887b8d5 100644
      private func image(_ url: URL?) -> Artwork? {
          guard let url else { return nil }
          if let a = artwork[url] { return a }
-@@ -217,13 +287,27 @@ public struct ShellHostConfig: Sendable {
+@@ -217,13 +289,27 @@ public struct ShellHostConfig: Sendable {
          return a
      }
  
@@ -567,7 +585,7 @@ index 02898cb..887b8d5 100644
          guard let profile = entry.profile, entry.problem == nil else {
              return GameDetail(game: tile, dataNote: dataNote(data, found: false))
          }
-@@ -280,7 +364,7 @@ public struct ShellHostConfig: Sendable {
+@@ -280,7 +366,7 @@ public struct ShellHostConfig: Sendable {
  
      /// The closures for `LibraryView`.
      public var actions: ShellActions {
@@ -576,7 +594,7 @@ index 02898cb..887b8d5 100644
              onPlay: { [weak self] id in self?.play(id) },
              onChange: { [weak self] id, setting, value in self?.change(id, setting: setting, value: value) },
              onPickGameData: { [weak self] id in self?.pickGameData(id) },
-@@ -304,6 +388,10 @@ public struct ShellHostConfig: Sendable {
+@@ -304,6 +390,10 @@ public struct ShellHostConfig: Sendable {
              onGlobalPadMapReset: { [weak self] in self?.shellSettings.resetPadMap(); self?.refreshAll() },
              onButtonTest: { [weak self] open in self?.buttonTest(open) },
              onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
@@ -587,7 +605,7 @@ index 02898cb..887b8d5 100644
      }
  
      public func change(_ id: String, setting: String, value: String) {
-@@ -454,12 +542,30 @@ public struct ShellHostConfig: Sendable {
+@@ -454,12 +544,30 @@ public struct ShellHostConfig: Sendable {
          }
          // Remembered when Play is triggered, even if the launcher then fails (the stub). The order changes at the next load.
          LastPlayedStore(defaults: config.defaults(id)).record(config.now())
@@ -621,10 +639,10 @@ index 02898cb..887b8d5 100644
      /// A game's values for the engine: its own choices, then the shell's defaults. A game whose settings list has no
 diff --git a/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift b/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift
 new file mode 100644
-index 0000000..31e7a4b
+index 0000000..a0ace14
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,50 @@
 +import Foundation
 +
 +/// A game played in the browser, from the app's `WebGames/<id>/` folder: `game.json` with the page's address, the title and
@@ -655,10 +673,13 @@ index 0000000..31e7a4b
 +        return names.filter { !$0.hasPrefix(".") }.sorted().compactMap { read(directory: root.appendingPathComponent($0, isDirectory: true), fm) }
 +    }
 +
++    /// A page on the web, or another app of this device that runs the game (Ocarina of Time in the Nintendo Switch 2 app).
++    static let schemes: Set<String> = ["https", "iswitchduo-switch2"]
++
 +    static func read(directory dir: URL, _ fm: FileManager) -> WebGameEntry? {
 +        guard let data = fm.contents(atPath: dir.appendingPathComponent("game.json").path),
 +              let m = try? JSONDecoder().decode(Manifest.self, from: data),
-+              let url = URL(string: m.url), url.scheme == "https", !m.title.isEmpty, !m.platform.isEmpty else { return nil }
++              let url = URL(string: m.url), url.scheme.map(Self.schemes.contains) == true, !m.title.isEmpty, !m.platform.isEmpty else { return nil }
 +        func image(_ base: String) -> URL? {
 +            GameCatalogue.imageExtensions.map { dir.appendingPathComponent("\(base).\($0)") }.first { fm.fileExists(atPath: $0.path) }
 +        }
@@ -838,7 +859,7 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..bedf1e9 100644
+index 8651917..fae2552 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -16,6 +16,16 @@ struct CoverFlowView: View, Equatable {
@@ -866,7 +887,7 @@ index 8651917..bedf1e9 100644
      }
  
      var body: some View {
-@@ -43,23 +54,27 @@ struct CoverFlowView: View, Equatable {
+@@ -43,47 +54,60 @@ struct CoverFlowView: View, Equatable {
              // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
              // bottom edge, and never so wide that the neighbours vanish.
              let height = geometry.size.height
@@ -900,8 +921,16 @@ index 8651917..bedf1e9 100644
 +                .padding(.top, cardTop)
                  .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                  topBar(short: short).padding(.horizontal, 24).padding(.top, Self.barTop(short: short))
-                 if !short {
-@@ -71,19 +86,27 @@ struct CoverFlowView: View, Equatable {
+-                if !short {
+-                    // The hint row keeps its place when it is hidden, so nothing moves when it appears.
+-                    hints.opacity(showsHints ? 1 : 0).padding(.bottom, 20)
++                if !short || platforms.count > 1 {
++                    // The hint bar keeps its place when it is hidden, so nothing moves when it appears. On a phone on its side
++                    // with a platform selector in the top bar, it sits at the bottom edge, over the floor.
++                    hints.opacity(showsHints ? 1 : 0).padding(.bottom, short ? 4 : 20)
+                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                 }
+             }
          }
          .sensoryFeedback(.selection, trigger: selected.id)
          .onAppear { centredID = selected.id }
@@ -931,7 +960,7 @@ index 8651917..bedf1e9 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -96,8 +119,9 @@ struct CoverFlowView: View, Equatable {
+@@ -96,8 +120,9 @@ struct CoverFlowView: View, Equatable {
              Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                  .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
              Spacer(minLength: 12)
@@ -943,7 +972,7 @@ index 8651917..bedf1e9 100644
                  hints.opacity(showsHints ? 1 : 0)
                  Spacer(minLength: 12)
              }
-@@ -113,6 +137,11 @@ struct CoverFlowView: View, Equatable {
+@@ -113,6 +138,11 @@ struct CoverFlowView: View, Equatable {
          // title and chips, centred in it, would sink away from the top edge, so the row stops growing at xxLarge, as the
          // title under the card does.
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
@@ -955,7 +984,7 @@ index 8651917..bedf1e9 100644
      }
      private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
      private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
-@@ -129,6 +158,7 @@ struct CoverFlowView: View, Equatable {
+@@ -129,6 +159,7 @@ struct CoverFlowView: View, Equatable {
                      // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
                      coverButton(detail, cover: cover)
                          .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
@@ -963,7 +992,7 @@ index 8651917..bedf1e9 100644
                          .id(detail.id)
                  }
              }.scrollTargetLayout()
-@@ -138,6 +168,11 @@ struct CoverFlowView: View, Equatable {
+@@ -138,6 +169,11 @@ struct CoverFlowView: View, Equatable {
          .contentMargins(.horizontal, margin, for: .scrollContent)
          .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x + $0.contentInsets.leading } action: { _, offset in
              scrolled = offset
@@ -975,7 +1004,7 @@ index 8651917..bedf1e9 100644
          }
          .onScrollPhaseChange { old, phase, context in
              // A touch scroll goes interacting, decelerating, maybe animating (the snap), then idle. Only once it has
-@@ -158,11 +193,39 @@ struct CoverFlowView: View, Equatable {
+@@ -158,11 +194,39 @@ struct CoverFlowView: View, Equatable {
                      if games[index].id != selected.id { select(games[index].id) }
                  }
                  userScrolling = false
@@ -1015,7 +1044,7 @@ index 8651917..bedf1e9 100644
      }
  
      /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
-@@ -190,20 +253,21 @@ struct CoverFlowView: View, Equatable {
+@@ -190,20 +254,21 @@ struct CoverFlowView: View, Equatable {
              // comes to the middle and never starts anything.
              if longPressed { longPressed = false; return }
              if chosen {
@@ -1042,7 +1071,7 @@ index 8651917..bedf1e9 100644
              longPressed = true
              openSettings()
          })
-@@ -238,6 +302,7 @@ struct CoverFlowView: View, Equatable {
+@@ -238,6 +303,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -1050,7 +1079,7 @@ index 8651917..bedf1e9 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,9 +311,24 @@ struct CoverFlowView: View, Equatable {
+@@ -246,14 +312,86 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -1069,17 +1098,20 @@ index 8651917..bedf1e9 100644
 +    }
 +
      private var hints: some View {
-         HStack(spacing: 24) {
+-        HStack(spacing: 24) {
 -            GlyphHint(role: .activate, label: selected.game.state.actionTitle)
++        HintBar {
 +            // A on the centred box opens it (the game starts from its card); a game that cannot start shows its way out.
 +            GlyphHint(role: .activate, label: selected.game.state == .playable ? ShellStrings.text("Open the box") : selected.game.state.actionTitle)
              GlyphHint(role: .settings, label: ShellStrings.text("Game settings"))
              GlyphHint(role: .controllers, label: ShellStrings.text("Controllers"))
++            if platforms.count > 1 { ShoulderHint(label: ShellStrings.text("Console")) }
          }
-@@ -257,6 +337,64 @@ struct CoverFlowView: View, Equatable {
-     }
- }
- 
+-        .frame(minHeight: 24)
+-        .accessibilityHidden(true)
++    }
++}
++
 +/// A game as an upright box: its cover, a soft sheen, the state dot, and its reflection on the floor under it. The chosen
 +/// box is lit: a light edge, a blue glow around it and a ring of light at its foot.
 +private struct BoxCover: View {
@@ -1135,12 +1167,9 @@ index 8651917..bedf1e9 100644
 +                    .allowsHitTesting(false)
 +            }
 +            .accessibilityHidden(true)
-+    }
-+}
-+
- /// The way out for a game that cannot start, as one small tappable line in the state's colour: "How to fix ›".
- /// VoiceOver reads the state with it.
- struct StateAction: View {
+     }
+ }
+ 
 @@ -352,27 +490,54 @@ private struct FlowTilt: ViewModifier {
      }
  }
@@ -1224,7 +1253,7 @@ index 8651917..bedf1e9 100644
 +    var idPrefix = "platform."
 +    var body: some View {
 +        HStack(spacing: 8) {
-+            if showsHints { shoulder("L") }
++            if showsHints { shoulder("LB") }
 +            HStack(spacing: 2) {
 +                ForEach(platforms, id: \.self) { name in
 +                    let on = name == current
@@ -1244,21 +1273,21 @@ index 8651917..bedf1e9 100644
 +            .background { Capsule().fill(.ultraThinMaterial).overlay(Capsule().fill(.black.opacity(0.5))) }
 +            .environment(\.colorScheme, .dark)
 +            .overlay(Capsule().strokeBorder(.white.opacity(0.14)))
-+            if showsHints { shoulder("R") }
++            if showsHints { shoulder("RB") }
 +        }
 +        .animation(.easeInOut(duration: 0.25), value: current)
 +    }
 +    private func shoulder(_ label: String) -> some View {
 +        Text(label).shellText(11, .bold, relativeTo: .caption2)
 +            .foregroundStyle(.white.opacity(0.8))
-+            .frame(width: 30, height: 22)
++            .frame(width: 34, height: 22)
 +            .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.14)))
 +            .accessibilityHidden(true)
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..a04f3db
+index 0000000..8583005
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 @@ -0,0 +1,612 @@
@@ -1774,7 +1803,7 @@ index 0000000..a04f3db
 +}
 +
 +/// A game card: a dark body with its corner cut, the label with the box art and a white strip.
-+private struct GameCard: View {
++struct GameCard: View {
 +    let game: GameTile
 +    let width: CGFloat
 +    let height: CGFloat
@@ -1876,10 +1905,10 @@ index 0000000..a04f3db
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameInfoPanel.swift b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
 new file mode 100644
-index 0000000..46d1460
+index 0000000..2a9e77b
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameInfoPanel.swift
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,310 @@
 +import SwiftUI
 +
 +/// A game's info panel in Cover Flow: it slides in from the right when the centred box is chosen (A or a tap). Two tabs, in the
@@ -1936,6 +1965,18 @@ index 0000000..46d1460
 +            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: tab)
 +        }
 +        .scrollIndicators(.hidden)
++        .safeAreaInset(edge: .bottom) {
++            // The controller's buttons here, as at the bottom of the library: A picks, B goes back, LB and RB change tabs.
++            if showsHints {
++                HintBar {
++                    GlyphHint(role: .activate, label: ShellStrings.text("Choose"))
++                    GlyphHint(role: .back, label: ShellStrings.text("Back"))
++                    ShoulderHint(label: ShellStrings.text("Tabs"))
++                }
++                .padding(.bottom, 12)
++                .frame(maxWidth: .infinity)
++            }
++        }
 +        .onChange(of: focus.id) { _, id in
 +            // Keeps the focused control in view, the screenshots included, on a short screen.
 +            guard let id, id.hasPrefix("info.") else { return }
@@ -2061,10 +2102,67 @@ index 0000000..46d1460
 +                }
 +            }
 +        }
++        YourCopy(game: game, open: openBox)
 +        Text(ShellStrings.text("Play time and launches are counted by this app, on this device.") + " "
 +             + ShellStrings.text("Sessions are recorded from this version on."))
 +            .shellType(ShellType.note).foregroundStyle(.white.opacity(0.4))
 +            .fixedSize(horizontal: false, vertical: true)
++    }
++}
++
++/// The game's copy, piece by piece as in its open box: the box, its spine, the card (a disc, a cartridge) and the booklet.
++/// Each opens the box.
++private struct YourCopy: View {
++    let game: GameTile
++    let open: () -> Void
++    var body: some View {
++        let style = CaseStyle.of(game)
++        VStack(alignment: .leading, spacing: 10) {
++            SectionHeading(title: ShellStrings.text("Your copy"))
++            EqualRow(spacing: 8) {
++                piece(0, ShellStrings.text("Box")) {
++                    ArtView(game: game, lettering: false, whole: game.webURL != nil)
++                        .frame(width: min(66 * CGFloat(game.boxRatio), 80), height: min(66 * CGFloat(game.boxRatio), 80) / CGFloat(game.boxRatio))
++                        .clipShape(RoundedRectangle(cornerRadius: 3))
++                }
++                piece(1, ShellStrings.text("Spine")) {
++                    RoundedRectangle(cornerRadius: 2)
++                        .fill(LinearGradient(colors: [style.light, style.dark], startPoint: .leading, endPoint: .trailing))
++                        .frame(width: 13, height: 66)
++                        .overlay(
++                            Text(game.title.uppercased()).font(ShellFonts.fixed(6, weight: .bold)).foregroundStyle(.white)
++                                .lineLimit(1).fixedSize().rotationEffect(.degrees(90)).frame(width: 13, height: 66).clipped()
++                        )
++                }
++                piece(2, game.isDisc ? ShellStrings.text("Disc") : game.isCart64 ? ShellStrings.text("Cartridge") : ShellStrings.text("Game card")) {
++                    let w: CGFloat = game.isDisc ? 58 : game.isCart64 ? 60 : 42
++                    GameCard(game: game, width: w, height: w * CaseTray.ratio(style))
++                }
++                piece(3, ShellStrings.text("Booklet")) {
++                    VStack(spacing: 0) {
++                        ArtView(game: game, lettering: false).frame(width: 46, height: 52).clipped()
++                        Rectangle().fill(Color(white: 0.94)).frame(width: 46, height: 8)
++                    }
++                    .clipShape(RoundedRectangle(cornerRadius: 2))
++                }
++            }
++        }
++    }
++    private func piece<V: View>(_ index: Int, _ label: String, @ViewBuilder _ visual: () -> V) -> some View {
++        Button(action: open) {
++            VStack(spacing: 8) {
++                visual().frame(height: 70).shadow(color: .black.opacity(0.4), radius: 4, y: 2)
++                Text(label).shellText(12, .semibold, relativeTo: .caption).lineLimit(1).minimumScaleFactor(0.6)
++            }
++            .frame(maxWidth: .infinity).padding(.vertical, 10)
++            .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11))
++            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.09)))
++            .contentShape(RoundedRectangle(cornerRadius: 11))
++        }
++        .buttonStyle(.plain)
++        .accessibilityLabel(label)
++        .accessibilityIdentifier("info.copy.\(index)")
++        .shellTarget("info.copy.\(index)", radius: 11, action: open)
 +    }
 +}
 +
@@ -2456,7 +2554,7 @@ index 0000000..4550465
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index eb5e2ef..662d3e7 100644
+index eb5e2ef..fef0e2b 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -29,7 +29,8 @@ enum ShellLayout: Equatable {
@@ -2497,7 +2595,15 @@ index eb5e2ef..662d3e7 100644
      @State private var focus: FocusAppearance
      @State private var targets = FocusTargetBuffer()
      @State private var settingsPosition = ScrollPosition()
-@@ -71,17 +86,21 @@ public struct LibraryView: View {
+@@ -66,22 +81,29 @@ public struct LibraryView: View {
+     @FocusState private var keyboardFocus: Bool
+     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+     @Environment(\.dynamicTypeSize) private var typeSize
++    @Environment(\.openURL) private var openURL
++    /// A game whose app could not be opened (not installed), for the alert.
++    @State private var appLinkFailed: String?
+ 
+     public init(games: [GameDetail], controllers: [ControllerInfo] = [], actions: ShellActions = ShellActions(),
                  input: ShellInput? = nil, initialSelection: String? = nil, initialDetailOpen: Bool = false,
                  initialControllersOpen: Bool = false, initialShellSettingsOpen: Bool = false, initialFocusVisible: Bool = false,
                  globalPadMap: PadMap = PadMap(), padSnapshot: PadSnapshot? = nil,
@@ -2521,7 +2627,7 @@ index eb5e2ef..662d3e7 100644
          _settingsOpen = State(initialValue: initialDetailOpen)
          _controllersOpen = State(initialValue: initialControllersOpen)
          _shellSettingsOpen = State(initialValue: initialShellSettingsOpen)
-@@ -89,6 +108,14 @@ public struct LibraryView: View {
+@@ -89,6 +111,14 @@ public struct LibraryView: View {
          _touchMode = State(initialValue: !initialFocusVisible)
      }
      private var selected: GameDetail? { games.first { $0.id == selectedID } ?? games.first }
@@ -2536,7 +2642,7 @@ index eb5e2ef..662d3e7 100644
  
      public var body: some View {
          GeometryReader { geometry in
-@@ -104,7 +131,9 @@ public struct LibraryView: View {
+@@ -104,7 +134,9 @@ public struct LibraryView: View {
              let paneCovers = settingsOpen && !floating
              let panelOverLibrary = settingsOpen && floating
              ZStack(alignment: .topLeading) {
@@ -2547,7 +2653,7 @@ index eb5e2ef..662d3e7 100644
                  if games.isEmpty {
                      EmptyLibraryView()
                          .overlay(alignment: .topTrailing) {
-@@ -114,12 +143,40 @@ public struct LibraryView: View {
+@@ -114,12 +146,40 @@ public struct LibraryView: View {
                              }.padding(.top, 6).padding(.trailing, 16)
                          }
                  } else if let selected {
@@ -2588,7 +2694,7 @@ index eb5e2ef..662d3e7 100644
                      if panelOverLibrary {
                          // The same dimming and dismissal as the Controllers overlay.
                          Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
-@@ -147,6 +204,29 @@ public struct LibraryView: View {
+@@ -147,6 +207,29 @@ public struct LibraryView: View {
                          .accessibilityAddTraits(settingsOpen ? .isModal : [])
                          .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
                  }
@@ -2618,7 +2724,7 @@ index eb5e2ef..662d3e7 100644
                  if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
                      Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
                          .onTapGesture { closeHelp() }
-@@ -235,13 +315,16 @@ public struct LibraryView: View {
+@@ -235,13 +318,16 @@ public struct LibraryView: View {
              .transformPreference(FocusTargets.self) { values in
                  values = values.filter { target in
                      if buttonTestOpen { return target.id.hasPrefix("test.") }
@@ -2636,7 +2742,7 @@ index eb5e2ef..662d3e7 100644
                  }
              }
              .coordinateSpace(name: "shell")
-@@ -265,6 +348,9 @@ public struct LibraryView: View {
+@@ -265,6 +351,9 @@ public struct LibraryView: View {
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
@@ -2646,7 +2752,18 @@ index eb5e2ef..662d3e7 100644
          .environment(\.shellPickChoice, { request in openChoice(request) })
          .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
          .environment(\.shellOpenButtonTest, { openButtonTest() })
-@@ -289,15 +375,18 @@ public struct LibraryView: View {
+@@ -272,6 +361,10 @@ public struct LibraryView: View {
+         .environment(\.shellAskDelete, { game in openDelete(game.id) })
+         .environment(\.shellFocus, focus)
+         .environment(\.shellInputDevice, device)
++        .alert(ShellStrings.text("The Nintendo Switch 2 app is not installed on this device."),
++               isPresented: Binding(get: { appLinkFailed != nil }, set: { if !$0 { appLinkFailed = nil } })) {
++            Button(ShellStrings.text("Close"), role: .cancel) {}
++        }
+         .foregroundStyle(.white)
+         .font(ShellFonts.font(15)).tint(ShellPalette.cream).preferredColorScheme(.dark)
+         .onChange(of: input) { _, event in if let event { handle(event.action, from: event.device) } }
+@@ -289,15 +382,18 @@ public struct LibraryView: View {
          .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
          .onDisappear { targets.values.removeAll() }
          .onChange(of: games.map(\.id)) { _, ids in
@@ -2668,7 +2785,7 @@ index eb5e2ef..662d3e7 100644
                  .equatable()
                  .transition(.opacity)
          } else {
-@@ -368,6 +457,7 @@ public struct LibraryView: View {
+@@ -368,6 +464,7 @@ public struct LibraryView: View {
      }
      private func primary(_ detail: GameDetail) {
          noteTouch()
@@ -2676,13 +2793,19 @@ index eb5e2ef..662d3e7 100644
          if detail.game.state.needsHelp { openHelp(detail.id); return }
          switch detail.game.state {
          case .playable: actions.onPlay(detail.id)
-@@ -376,6 +466,34 @@ public struct LibraryView: View {
+@@ -376,6 +473,40 @@ public struct LibraryView: View {
          case .broken: actions.onShowLog(detail.id)
          }
      }
 +    /// A browser game: its page full screen, over the library, which keeps its place behind it.
 +    private func openWeb(_ detail: GameDetail) {
 +        actions.onSelect(detail.id)
++        if detail.game.isAppLink, let url = detail.game.webURL {
++            // Another app runs this game: it opens over the library, which is found again as it was left.
++            openURL(url) { accepted in if !accepted { appLinkFailed = detail.game.title } }
++            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { boxOpen = false }
++            return
++        }
 +        webStarted = Date()
 +        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { webGame = detail.game }
 +    }
@@ -2711,7 +2834,7 @@ index eb5e2ef..662d3e7 100644
      private func select(_ id: String) {
          noteTouch()
          guard id != selectedID else { return }
-@@ -406,7 +524,48 @@ public struct LibraryView: View {
+@@ -406,7 +537,48 @@ public struct LibraryView: View {
      }
      private func closeSettings() {
          settingsOpen = false
@@ -2761,7 +2884,7 @@ index eb5e2ef..662d3e7 100644
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -493,7 +652,9 @@ public struct LibraryView: View {
+@@ -493,7 +665,9 @@ public struct LibraryView: View {
          focus.id = "ctl.test"
      }
      private func back() {
@@ -2772,7 +2895,7 @@ index eb5e2ef..662d3e7 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -502,11 +663,25 @@ public struct LibraryView: View {
+@@ -502,11 +676,25 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -2798,7 +2921,7 @@ index eb5e2ef..662d3e7 100644
          // Every controller button belongs to the button test while it is open: it closes on B held, touch or Escape.
          if buttonTestOpen, case .controller = source { return }
          if device != source { device = source }
-@@ -522,6 +697,11 @@ public struct LibraryView: View {
+@@ -522,6 +710,11 @@ public struct LibraryView: View {
          case .settings: openSettings()
          case .controllers: openControllers()
          case .left, .right:
@@ -2810,7 +2933,7 @@ index eb5e2ef..662d3e7 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -541,6 +721,8 @@ public struct LibraryView: View {
+@@ -541,6 +734,8 @@ public struct LibraryView: View {
          if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
      }
      private var defaultFocus: String? {
@@ -2819,7 +2942,7 @@ index eb5e2ef..662d3e7 100644
          if buttonTestOpen { return "test.close" }
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
-@@ -549,6 +731,7 @@ public struct LibraryView: View {
+@@ -549,6 +744,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -2828,7 +2951,7 @@ index eb5e2ef..662d3e7 100644
      }
  }
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 2a2db87..8e4fcaf 100644
+index 2a2db87..3d4330a 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -1,6 +1,126 @@
@@ -3728,7 +3851,7 @@ index 2a2db87..8e4fcaf 100644
      "Your games": {
        "localizations": {
          "en": {
-@@ -5936,7 +6664,1047 @@
+@@ -5936,7 +6664,1447 @@
            }
          }
        }
@@ -4772,6 +4895,406 @@ index 2a2db87..8e4fcaf 100644
 +          }
 +        }
 +      }
++    },
++    "Console": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Console"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Console"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Konsole"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Console"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Konsol"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "主机"
++          }
++        }
++      }
++    },
++    "Tabs": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Tabs"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Onglets"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Tabs"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Schede"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Flikar"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "标签页"
++          }
++        }
++      }
++    },
++    "Your copy": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Your copy"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ton exemplaire"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Dein Exemplar"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "La tua copia"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ditt exemplar"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "你的实体版"
++          }
++        }
++      }
++    },
++    "Box": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Box"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Boîte"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Hülle"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Custodia"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Fodral"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "外盒"
++          }
++        }
++      }
++    },
++    "Spine": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spine"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Tranche"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Rücken"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Dorso"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Rygg"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "侧脊"
++          }
++        }
++      }
++    },
++    "Game card": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Game card"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Carte de jeu"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spielkarte"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Scheda di gioco"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Spelkort"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "游戏卡"
++          }
++        }
++      }
++    },
++    "Disc": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Disc"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Disque"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Disc"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Disco"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Skiva"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "光盘"
++          }
++        }
++      }
++    },
++    "Cartridge": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Cartridge"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Cartouche"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Modul"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Cartuccia"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Kassett"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "卡带"
++          }
++        }
++      }
++    },
++    "Booklet": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Booklet"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Livret"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Anleitung"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Libretto"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Häfte"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "说明书"
++          }
++        }
++      }
++    },
++    "The Nintendo Switch 2 app is not installed on this device.": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "The Nintendo Switch 2 app is not installed on this device."
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "L'app Nintendo Switch 2 n'est pas installée sur cet appareil."
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Die App „Nintendo Switch 2“ ist auf diesem Gerät nicht installiert."
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "L'app Nintendo Switch 2 non è installata su questo dispositivo."
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Appen Nintendo Switch 2 är inte installerad på den här enheten."
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "此设备上未安装 Nintendo Switch 2 应用。"
++          }
++        }
++      }
      }
    },
    "version": "1.0"
@@ -4838,7 +5361,7 @@ index 6c2c8d0..6d0d761 100644
      public static func metaLine(_ parts: String?...) -> String {
          parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
 diff --git a/frontend-ios/Sources/ShellUI/ShellInputs.swift b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-index 4533d0e..4587837 100644
+index 4533d0e..3c60309 100644
 --- a/frontend-ios/Sources/ShellUI/ShellInputs.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellInputs.swift
 @@ -24,8 +24,31 @@ public struct GameTile: Identifiable, Equatable, Sendable {
@@ -4874,7 +5397,7 @@ index 4533d0e..4587837 100644
          self.id = id
          self.title = title
          self.subtitle = subtitle
-@@ -33,6 +56,93 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -33,6 +56,95 @@ public struct GameTile: Identifiable, Equatable, Sendable {
          self.icon = icon
          self.state = state
          self.recentlyPlayed = recentlyPlayed
@@ -4889,7 +5412,9 @@ index 4533d0e..4587837 100644
 +    /// The platform of the games this app runs itself.
 +    public static let switchPlatform = "Switch"
 +    /// A disc rather than a card in the box: the platforms whose games came on discs.
-+    public var isDisc: Bool { webURL != nil && platform != Self.switchPlatform && !isCart64 }
++    public var isDisc: Bool { webURL != nil && platform != Self.switchPlatform && platform != "Switch 2" && !isCart64 }
++    /// A game another app of this device runs: its tile opens that app instead of a page.
++    public var isAppLink: Bool { webURL.map { $0.scheme != "https" && $0.scheme != "http" } ?? false }
 +    /// A Nintendo 64 game: a grey cartridge, in a box wider than it is tall, going in at the top of the console.
 +    public var isCart64: Bool { webURL != nil && platform == "N64" }
 +    /// The box's width for a height of 1: a Switch case, a disc's case (a PS2 case, 135 x 190 mm), or the wide N64 box.
@@ -4968,7 +5493,7 @@ index 4533d0e..4587837 100644
      }
  }
  
-@@ -158,7 +268,9 @@ public enum InputDevice: Equatable, Sendable {
+@@ -158,7 +270,9 @@ public enum InputDevice: Equatable, Sendable {
  
  /// An optional event supplied by the host's input adapter. Increment sequence for repeated presses.
  public struct ShellInput: Equatable, Sendable {
@@ -4979,7 +5504,7 @@ index 4533d0e..4587837 100644
      public var sequence: Int
      public var action: Action
      public var device: InputDevice
-@@ -218,6 +330,11 @@ public struct ShellActions {
+@@ -218,6 +332,11 @@ public struct ShellActions {
      public var onButtonTest: (Bool) -> Void
      /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
      public var onDeleteGame: (_ gameID: String, _ saves: Bool) -> Void
@@ -4992,7 +5517,7 @@ index 4533d0e..4587837 100644
                  onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                  onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
 diff --git a/frontend-ios/Sources/ShellUI/ShellStyle.swift b/frontend-ios/Sources/ShellUI/ShellStyle.swift
-index 99ecd78..38efbb6 100644
+index 99ecd78..97ac6f6 100644
 --- a/frontend-ios/Sources/ShellUI/ShellStyle.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellStyle.swift
 @@ -232,9 +232,17 @@ struct ArtView: View {
@@ -5014,6 +5539,51 @@ index 99ecd78..38efbb6 100644
                  Image(decorative: backdrop ? banner.thumbnail : banner.image, scale: 1)
                      .resizable().interpolation(backdrop ? .medium : .high).scaledToFill()
              } else if let icon = game.icon {
+@@ -429,14 +437,42 @@ struct ButtonGlyph: View {
+     }
+ }
+ 
++/// The controller hints in a capsule, as the platform selector: shown while a controller or keyboard is in use.
++struct HintBar<Content: View>: View {
++    @ViewBuilder let content: Content
++    var body: some View {
++        HStack(spacing: 14) { content }
++            .padding(.horizontal, 16).frame(minHeight: 36)
++            .background { Capsule().fill(.ultraThinMaterial).overlay(Capsule().fill(.black.opacity(0.5))) }
++            .environment(\.colorScheme, .dark)
++            .overlay(Capsule().strokeBorder(.white.opacity(0.14)))
++            .accessibilityHidden(true)
++    }
++}
++
++/// The shoulder buttons, as a GameSir G8 Plus and an Xbox controller name them, with what they do.
++struct ShoulderHint: View {
++    let label: String
++    var body: some View {
++        HStack(spacing: 8) {
++            HStack(spacing: 4) { cap("LB"); cap("RB") }
++            Text(label).shellText(13, .medium, relativeTo: .footnote).lineLimit(1).fixedSize()
++        }.foregroundStyle(.white.opacity(0.75))
++    }
++    private func cap(_ text: String) -> some View {
++        Text(text).font(ShellFonts.fixed(10, weight: .bold)).frame(minWidth: 26, minHeight: 20)
++            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.white.opacity(0.45), lineWidth: 1.2))
++    }
++}
++
+ struct GlyphHint: View {
+     let role: GlyphRole
+     let label: String
+     var body: some View {
+         HStack(spacing: 8) {
+             ButtonGlyph(role: role)
+-            Text(label).shellText(13, .medium, relativeTo: .footnote)
+-        }.foregroundStyle(.white.opacity(0.6))
++            Text(label).shellText(13, .medium, relativeTo: .footnote).lineLimit(1).fixedSize()
++        }.foregroundStyle(.white.opacity(0.75))
+     }
+ }
+ 
 diff --git a/frontend-ios/Sources/ShellUI/WebGameView.swift b/frontend-ios/Sources/ShellUI/WebGameView.swift
 new file mode 100644
 index 0000000..a9a8d00
@@ -5439,6 +6009,42 @@ index 0000000..8ededfd
 +        #expect(store.openSession != nil)
 +    }
 +}
+diff --git a/frontend-ios/Tests/ShellHostTests/WebGameCatalogueTests.swift b/frontend-ios/Tests/ShellHostTests/WebGameCatalogueTests.swift
+new file mode 100644
+index 0000000..a69cf95
+--- /dev/null
++++ b/frontend-ios/Tests/ShellHostTests/WebGameCatalogueTests.swift
+@@ -0,0 +1,30 @@
++import Foundation
++import Testing
++@testable import ShellHost
++
++/// A browser game's folder is read when its address is a web page (https) or the Nintendo Switch 2 app (iswitchduo-switch2),
++/// never another scheme.
++@Suite struct WebGameCatalogueTests {
++    private func folder(_ url: String, platform: String = "PS2") throws -> URL {
++        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("webgame-\(UUID().uuidString)")
++        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++        let json = #"{"title": "A game", "platform": "\#(platform)", "url": "\#(url)"}"#
++        try Data(json.utf8).write(to: dir.appendingPathComponent("game.json"))
++        return dir
++    }
++
++    @Test func aWebPageIsRead() throws {
++        #expect(WebGameCatalogue.read(directory: try folder("https://example.com/"), .default)?.url.scheme == "https")
++    }
++
++    @Test func theSwitch2AppIsRead() throws {
++        let entry = WebGameCatalogue.read(directory: try folder("iswitchduo-switch2://", platform: "Switch 2"), .default)
++        #expect(entry?.url.scheme == "iswitchduo-switch2")
++        #expect(entry?.platform == "Switch 2")
++    }
++
++    @Test func anotherSchemeIsNot() throws {
++        #expect(WebGameCatalogue.read(directory: try folder("http://example.com/"), .default) == nil)
++        #expect(WebGameCatalogue.read(directory: try folder("javascript:alert(1)"), .default) == nil)
++    }
++}
 diff --git a/frontend-ios/Tests/ShellUITests/AmbienceTests.swift b/frontend-ios/Tests/ShellUITests/AmbienceTests.swift
 new file mode 100644
 index 0000000..4371e05
@@ -5506,10 +6112,10 @@ index 1c29841..a647667 100644
          #expect(ShellFormat.version("") == "")
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..36d5ec8
+index 0000000..d3edb37
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,210 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -5641,6 +6247,24 @@ index 0000000..36d5ec8
 +        launch(["--screen", "box", "--select", "tide", "--still"])
 +        sleep(2)
 +        shot("other-03-box-tide")
++        // The controller hint bar (a GameSir G8 Plus: A, X, Y, LB and RB) in the library, then the next platform: Switch 2,
++        // a game another app runs. The QA buttons go to the top, out of the bar's way.
++        launch(["--screen", "library", "--still", "--web", "--web2", "--input-test", "--qa-top"])
++        app.buttons["qa.input.right"].tap()
++        sleep(1)
++        shot("other-04-hints-library")
++        app.buttons["qa.input.next"].tap()
++        sleep(2)
++        shot("other-05-switch2")
++        // The info panel's hint bar, its Your play tab (RB) and, further down, Your copy.
++        launch(["--screen", "info", "--select", "orbit", "--still", "--web", "--input-test", "--qa-top"])
++        app.buttons["qa.input.down"].tap()
++        app.buttons["qa.input.next"].tap()
++        sleep(1)
++        shot("other-06-hints-your-play")
++        for _ in 0..<6 { app.buttons["qa.input.down"].tap(); usleep(300_000) }
++        sleep(1)
++        shot("other-07-your-copy")
 +    }
 +
 +    /// The platform selector at the top in the middle (a browser game under PS2), its box with a disc, the disc going in and the
