@@ -8107,10 +8107,10 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..cb498a5
+index 0000000..e40b031
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,345 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -8430,8 +8430,9 @@ index 0000000..cb498a5
 +
 +    /// The opening slowed down, frame by frame; a touch and a button skip it; the controller banner; the New sticker.
 +    func testOpeningBannerAndNew() {
-+        launch(["--screen", "library", "--intro", "--intro-length", "7"])
-+        for frame in 1...5 { shot("intro-\(frame)"); usleep(1_000_000) }
++        // Slowed down to 40 s: the launch takes about 12 s before the first frame can be taken.
++        launch(["--screen", "library", "--intro", "--intro-length", "40"])
++        for frame in 1...7 { shot("intro-\(frame)"); sleep(3) }
 +        launch(["--screen", "library", "--intro", "--intro-length", "60"])
 +        let skip = app.descendants(matching: .any)["intro.skip"]
 +        XCTAssertTrue(skip.exists, "the opening is not there")
