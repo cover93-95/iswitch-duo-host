@@ -859,7 +859,7 @@ index 0000000..3e801ea
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..254c282 100644
+index 8651917..4664cd8 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -16,6 +16,19 @@ struct CoverFlowView: View, Equatable {
@@ -890,7 +890,7 @@ index 8651917..254c282 100644
      }
  
      var body: some View {
-@@ -43,47 +57,67 @@ struct CoverFlowView: View, Equatable {
+@@ -43,47 +57,75 @@ struct CoverFlowView: View, Equatable {
              // go under the card at a fixed distance, so the card is only as tall as leaves room for them above the
              // bottom edge, and never so wide that the neighbours vanish.
              let height = geometry.size.height
@@ -919,9 +919,7 @@ index 8651917..254c282 100644
 +                    }
 +                    // A new console's boxes are a new row: it slides in from the side of the shoulder button while the old one leaves.
 +                    .id(platform)
-+                    .transition(reduceMotion ? .opacity : .asymmetric(
-+                        insertion: .offset(x: CGFloat(platformStep) * geometry.size.width * 0.6).combined(with: .opacity),
-+                        removal: .offset(x: -CGFloat(platformStep) * geometry.size.width * 0.6).combined(with: .opacity)))
++                    .transition(platformSlide(width: geometry.size.width))
 +                    .frame(height: cardHeight * 1.06)
                      info(short: short, width: geometry.size.width)
 -                        .padding(.top, gap).padding(.horizontal, 24)
@@ -958,6 +956,16 @@ index 8651917..254c282 100644
      }
  
 -    /// The title and state under the card: two lines of title reserved, then the state line.
++    /// The boxes' way in and out when the console changes: the new row from the side of the shoulder button, the old one out
++    /// the other way. Reduce Motion: a crossfade.
++    private func platformSlide(width: CGFloat) -> AnyTransition {
++        if reduceMotion { return .opacity }
++        let distance: CGFloat = CGFloat(platformStep) * width * 0.6
++        let comeIn: AnyTransition = AnyTransition.offset(x: distance, y: 0).combined(with: .opacity)
++        let goOut: AnyTransition = AnyTransition.offset(x: -distance, y: 0).combined(with: .opacity)
++        return AnyTransition.asymmetric(insertion: comeIn, removal: goOut)
++    }
++
 +    /// The title and state under the card: two lines of title reserved, then the state line, then the page dots.
      static func infoHeight(short: Bool) -> CGFloat {
          let size: CGFloat = short ? 18 : 28
@@ -971,7 +979,7 @@ index 8651917..254c282 100644
  
      /// The distance from the top of the safe area to the top bar. A phone on its side has no status bar, so the chips
      /// need their own air above them there. The bar is one centred row, so the title and the chips share a centre.
-@@ -96,8 +130,9 @@ struct CoverFlowView: View, Equatable {
+@@ -96,8 +138,9 @@ struct CoverFlowView: View, Equatable {
              Text(ShellStrings.text("\(position) of \(games.count)")).shellText(12, .medium, relativeTo: .caption)
                  .monospacedDigit().foregroundStyle(.white.opacity(0.45)).padding(.leading, 4)
              Spacer(minLength: 12)
@@ -983,7 +991,7 @@ index 8651917..254c282 100644
                  hints.opacity(showsHints ? 1 : 0)
                  Spacer(minLength: 12)
              }
-@@ -113,6 +148,11 @@ struct CoverFlowView: View, Equatable {
+@@ -113,6 +156,11 @@ struct CoverFlowView: View, Equatable {
          // title and chips, centred in it, would sink away from the top edge, so the row stops growing at xxLarge, as the
          // title under the card does.
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility5))
@@ -995,7 +1003,7 @@ index 8651917..254c282 100644
      }
      private var position: Int { (games.firstIndex { $0.id == selected.id } ?? 0) + 1 }
      private var selectedIndex: Int { games.firstIndex { $0.id == selected.id } ?? 0 }
-@@ -129,6 +169,7 @@ struct CoverFlowView: View, Equatable {
+@@ -129,6 +177,7 @@ struct CoverFlowView: View, Equatable {
                      // Places from the middle: -1 is the neighbour on the left, 1 the one on the right.
                      coverButton(detail, cover: cover)
                          .modifier(FlowTilt(place: CGFloat(index) - scrolled / stride, cover: cover, flat: reduceMotion))
@@ -1003,7 +1011,7 @@ index 8651917..254c282 100644
                          .id(detail.id)
                  }
              }.scrollTargetLayout()
-@@ -138,6 +179,11 @@ struct CoverFlowView: View, Equatable {
+@@ -138,6 +187,11 @@ struct CoverFlowView: View, Equatable {
          .contentMargins(.horizontal, margin, for: .scrollContent)
          .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x + $0.contentInsets.leading } action: { _, offset in
              scrolled = offset
@@ -1015,7 +1023,7 @@ index 8651917..254c282 100644
          }
          .onScrollPhaseChange { old, phase, context in
              // A touch scroll goes interacting, decelerating, maybe animating (the snap), then idle. Only once it has
-@@ -158,11 +204,39 @@ struct CoverFlowView: View, Equatable {
+@@ -158,11 +212,39 @@ struct CoverFlowView: View, Equatable {
                      if games[index].id != selected.id { select(games[index].id) }
                  }
                  userScrolling = false
@@ -1055,7 +1063,7 @@ index 8651917..254c282 100644
      }
  
      /// One to three games: they sit together in the middle, the chosen one in front and larger. No empty track.
-@@ -190,20 +264,21 @@ struct CoverFlowView: View, Equatable {
+@@ -190,20 +272,21 @@ struct CoverFlowView: View, Equatable {
              // comes to the middle and never starts anything.
              if longPressed { longPressed = false; return }
              if chosen {
@@ -1082,7 +1090,7 @@ index 8651917..254c282 100644
              longPressed = true
              openSettings()
          })
-@@ -238,6 +313,7 @@ struct CoverFlowView: View, Equatable {
+@@ -238,6 +321,7 @@ struct CoverFlowView: View, Equatable {
                  } else {
                      StateAction(game: game) { primary(selected) }
                  }
@@ -1090,7 +1098,7 @@ index 8651917..254c282 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,14 +322,106 @@ struct CoverFlowView: View, Equatable {
+@@ -246,14 +330,106 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -1201,7 +1209,7 @@ index 8651917..254c282 100644
      }
  }
  
-@@ -352,30 +520,75 @@ private struct FlowTilt: ViewModifier {
+@@ -352,30 +528,75 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -1289,7 +1297,7 @@ index 8651917..254c282 100644
  }
  
  /// The controller count on top of art, which opens Controllers.
-@@ -407,3 +620,47 @@ struct ShellSettingsChip: View {
+@@ -407,3 +628,47 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
