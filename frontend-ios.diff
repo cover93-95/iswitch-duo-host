@@ -225,10 +225,30 @@ index 0000000..8a1e9e6
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
-index 5b7eba5..01bf945 100644
+index 5b7eba5..cb260eb 100644
 --- a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
 +++ b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
-@@ -55,10 +55,10 @@ struct DemoScreen: View {
+@@ -29,7 +29,19 @@ struct DemoScreen: View {
+     /// Real controllers, through the reusable adapter in ShellControllers.
+     @State private var gamepads = GamepadAdapter()
+     @State private var connected: [ConnectedController] = []
++    /// `--controller-notice`: no controller at first, one a moment later, for the banner.
++    @State private var noticeArrived = !ProcessInfo.processInfo.arguments.contains("--controller-notice")
+     private var args: [String] { ProcessInfo.processInfo.arguments }
++    init() {
++        // `--new-games a,b`: every sample game known but these, which wear the New sticker.
++        let args = ProcessInfo.processInfo.arguments
++        if let at = args.firstIndex(of: "--new-games"), at + 1 < args.count {
++            let fresh = Set(args[at + 1].split(separator: ",").map(String.init))
++            UserDefaults.standard.set(SampleData.games.map(\.id).filter { !fresh.contains($0) }, forKey: NewGames.key)
++        } else {
++            UserDefaults.standard.removeObject(forKey: NewGames.key)
++        }
++    }
+     private func value(_ flag: String) -> String? {
+         guard let i = args.firstIndex(of: flag), args.indices.contains(i + 1) else { return nil }
+         return args[i + 1]
+@@ -55,10 +67,10 @@ struct DemoScreen: View {
          }
          .background(ShellPalette.background)
          // QA only: on-screen stand-ins for controller buttons, above everything so the art never takes their taps.
@@ -241,17 +261,33 @@ index 5b7eba5..01bf945 100644
                          Button(name) { send(qaAction(name)) }.accessibilityIdentifier("qa.input.\(name)").frame(minHeight: 44)
                      }
                  }
-@@ -90,7 +90,8 @@ struct DemoScreen: View {
+@@ -74,13 +86,14 @@ struct DemoScreen: View {
+             gamepads.onInput = { action, device in send(action, from: device) }
+             gamepads.onControllersChange = { connected = $0 }
+             gamepads.start()
++            if !noticeArrived { Task { try? await Task.sleep(for: .seconds(2.5)); noticeArrived = true } }
+         }
+         .onDisappear { gamepads.stop() }
+     }
+ 
+     private var shell: some View {
+         LibraryView(games: shown,
+-                    controllers: scenario == "controllers-empty" ? [] : controllers,
++                    controllers: scenario == "controllers-empty" || !noticeArrived ? [] : controllers,
+                     actions: actions, input: input, initialSelection: initialSelection,
+                     initialDetailOpen: scenario == "settings",
+                     initialControllersOpen: scenario.hasPrefix("controllers"),
+@@ -90,7 +103,8 @@ struct DemoScreen: View {
                      padSnapshot: padSnapshot ?? (scenario == "controllers-test"
                          ? PadSnapshot(name: "Demo", pressed: [.a, .leftBumper, .up], leftStick: CGPoint(x: 0.6, y: 0.5), rightTrigger: 0.7) : nil),
                      initialPadMapping: scenario == "controllers-mapping" ? ControllersView.mappingID : nil,
 -                    initialButtonTestOpen: scenario == "controllers-test")
 +                    initialButtonTestOpen: scenario == "controllers-test",
-+                    initialInfoOpen: scenario == "info", initialBoxOpen: scenario == "box")
++                    initialInfoOpen: scenario == "info", initialBoxOpen: scenario == "box", intro: args.contains("--intro"))
      }
  
      /// A stand-in for the foldable while no Simulator runtime for it is installed: the same running shell in a frame
-@@ -125,6 +126,10 @@ struct DemoScreen: View {
+@@ -125,6 +139,10 @@ struct DemoScreen: View {
          case "up": .up
          case "activate": .activate
          case "back": .back
@@ -694,6 +730,19 @@ index 02898cb..53de34a 100644
      }
  
      /// A game's values for the engine: its own choices, then the shell's defaults. A game whose settings list has no
+diff --git a/frontend-ios/Sources/ShellHost/ShellHostView.swift b/frontend-ios/Sources/ShellHost/ShellHostView.swift
+index 45802e4..50d1beb 100644
+--- a/frontend-ios/Sources/ShellHost/ShellHostView.swift
++++ b/frontend-ios/Sources/ShellHost/ShellHostView.swift
+@@ -17,7 +17,7 @@ public struct ShellHostView: View {
+     public var body: some View {
+         LibraryView(games: model.details, controllers: model.controllers, actions: model.actions, input: model.input,
+                     initialSelection: initialSelection, initialDetailOpen: initialDetailOpen, globalPadMap: model.globalPadMap,
+-                    padSnapshot: model.padSnapshot)
++                    padSnapshot: model.padSnapshot, intro: true)
+             .sheet(item: $model.log) { LogView(log: $0) }
+             .alert(Text(verbatim: hostText("Shell")), isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
+                 Button(hostText("OK")) { model.notice = nil }
 diff --git a/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift b/frontend-ios/Sources/ShellHost/WebGameCatalogue.swift
 new file mode 100644
 index 0000000..fa3b059
@@ -1513,7 +1562,7 @@ index 0000000..a95b91f
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/CoverFlowView.swift b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
-index 8651917..5da2538 100644
+index 8651917..768a71a 100644
 --- a/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 +++ b/frontend-ios/Sources/ShellUI/CoverFlowView.swift
 @@ -16,6 +16,21 @@ struct CoverFlowView: View, Equatable {
@@ -1759,7 +1808,7 @@ index 8651917..5da2538 100644
              }
              .id(game.id).transition(.opacity)
          }
-@@ -246,14 +336,106 @@ struct CoverFlowView: View, Equatable {
+@@ -246,14 +336,107 @@ struct CoverFlowView: View, Equatable {
          .dynamicTypeSize(...(short ? DynamicTypeSize.xxLarge : DynamicTypeSize.accessibility1))
      }
  
@@ -1813,6 +1862,7 @@ index 8651917..5da2538 100644
 +                    StateDot(state: game.state, size: size).padding(size * 0.9)
 +                }
 +            }
++            .overlay(alignment: .topTrailing) { if game.isNew { NewSticker(width: width) } }
 +            .shadow(color: chosen ? glow.opacity(0.6) : .black.opacity(0.5), radius: chosen ? width * 0.10 : width * 0.05,
 +                    y: chosen ? 0 : width * 0.03)
 +            .background(alignment: .bottom) {
@@ -1870,7 +1920,7 @@ index 8651917..5da2538 100644
      }
  }
  
-@@ -352,30 +534,75 @@ private struct FlowTilt: ViewModifier {
+@@ -352,30 +535,75 @@ private struct FlowTilt: ViewModifier {
      }
  }
  
@@ -1958,7 +2008,7 @@ index 8651917..5da2538 100644
  }
  
  /// The controller count on top of art, which opens Controllers.
-@@ -407,3 +634,47 @@ struct ShellSettingsChip: View {
+@@ -407,3 +635,47 @@ struct ShellSettingsChip: View {
              .shellTarget("lib.shellSettings", radius: 22, action: action)
      }
  }
@@ -3396,8 +3446,179 @@ index 0000000..4550465
 +        return data
 +    }
 +}
+diff --git a/frontend-ios/Sources/ShellUI/LibraryExtras.swift b/frontend-ios/Sources/ShellUI/LibraryExtras.swift
+new file mode 100644
+index 0000000..20ff358
+--- /dev/null
++++ b/frontend-ios/Sources/ShellUI/LibraryExtras.swift
+@@ -0,0 +1,165 @@
++import SwiftUI
++
++// MARK: Controller notice
++
++/// A controller came or went while the library is in view: shown a few seconds as a banner at the top, with its battery.
++public struct ControllerNotice: Equatable, Sendable {
++    public enum Kind: Equatable, Sendable { case connected, disconnected }
++    public var kind: Kind
++    public var name: String
++    public var batteryPercent: Int?
++    public var charging: Bool
++
++    /// The last change between two lists of controllers: one that arrived, else one that left. Nil when the same ones are there
++    /// (a battery level that moved is not news).
++    public static func change(from old: [ControllerInfo], to new: [ControllerInfo]) -> ControllerNotice? {
++        let before = Set(old.map(\.id)), after = Set(new.map(\.id))
++        if let came = new.last(where: { !before.contains($0.id) }) {
++            return ControllerNotice(kind: .connected, name: came.name, batteryPercent: came.batteryPercent, charging: came.charging)
++        }
++        if let left = old.last(where: { !after.contains($0.id) }) {
++            return ControllerNotice(kind: .disconnected, name: left.name, batteryPercent: nil, charging: false)
++        }
++        return nil
++    }
++    var low: Bool { kind == .connected && !charging && (batteryPercent ?? 100) < 20 }
++}
++
++/// The banner: the controller's icon, its name and what happened, and its battery when it reports one (amber when low).
++struct ControllerNoticeBanner: View {
++    let notice: ControllerNotice
++    var body: some View {
++        let connected = notice.kind == .connected
++        HStack(spacing: 12) {
++            Image(systemName: connected ? "gamecontroller.fill" : "gamecontroller")
++                .font(.system(size: 20, weight: .semibold))
++                .foregroundStyle(connected ? ShellPalette.cream : .white.opacity(0.6))
++            VStack(alignment: .leading, spacing: 1) {
++                Text(notice.name).shellText(15, .bold).lineLimit(1)
++                Text(connected ? ShellStrings.text("Controller connected") : ShellStrings.text("Controller disconnected"))
++                    .shellText(13).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
++            }
++            if connected, let percent = notice.batteryPercent {
++                HStack(spacing: 5) {
++                    Image(systemName: notice.charging ? "battery.100.bolt" : Self.batteryIcon(percent))
++                    Text("\(percent) %").monospacedDigit()
++                }
++                .font(.system(size: 14, weight: .semibold))
++                .foregroundStyle(notice.low ? Color.orange : .white.opacity(0.85))
++                .padding(.leading, 6)
++            }
++        }
++        .padding(.horizontal, 18).padding(.vertical, 10)
++        .background(.black.opacity(0.72), in: Capsule())
++        .overlay(Capsule().strokeBorder(.white.opacity(notice.low ? 0 : 0.14)).overlay(Capsule().strokeBorder(Color.orange.opacity(notice.low ? 0.7 : 0))))
++        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
++        .accessibilityElement(children: .combine)
++        .accessibilityIdentifier("controller.notice")
++    }
++    static func batteryIcon(_ percent: Int) -> String {
++        switch percent {
++        case ..<13: "battery.0"
++        case ..<38: "battery.25"
++        case ..<63: "battery.50"
++        case ..<88: "battery.75"
++        default: "battery.100"
++        }
++    }
++}
++
++// MARK: New games
++
++/// The games added since the player last looked: each wears a "New" sticker until it is played. Kept on this device only.
++public enum NewGames {
++    public static let key = "shell.seenGames"
++
++    /// The games to mark, and the list to keep. The first time (nothing kept yet) every game is taken as known: no sticker on
++    /// a library the player already had.
++    public static func resolve(ids: [String], seen: [String]?) -> (fresh: Set<String>, seen: [String]) {
++        guard let seen else { return ([], ids) }
++        let known = Set(seen)
++        return (Set(ids.filter { !known.contains($0) }), seen)
++    }
++    @MainActor static func load(_ ids: [String], defaults: UserDefaults = .standard) -> Set<String> {
++        let result = resolve(ids: ids, seen: defaults.stringArray(forKey: key))
++        defaults.set(result.seen, forKey: key)
++        return result.fresh
++    }
++    @MainActor static func played(_ id: String, defaults: UserDefaults = .standard) {
++        var seen = defaults.stringArray(forKey: key) ?? []
++        if !seen.contains(id) { seen.append(id); defaults.set(seen, forKey: key) }
++    }
++}
++
++/// The sticker on a new game's box, top right, a little askew as one stuck on in a shop.
++struct NewSticker: View {
++    let width: CGFloat
++    var body: some View {
++        let size = max(9, min(15, width * 0.062))
++        Text(ShellStrings.text("New").uppercased())
++            .font(.system(size: size, weight: .heavy)).tracking(0.6)
++            .foregroundStyle(.white)
++            .padding(.horizontal, size * 0.7).padding(.vertical, size * 0.32)
++            .background(LinearGradient(colors: [Color(red: 1, green: 0.32, blue: 0.22), Color(red: 0.86, green: 0.12, blue: 0.16)],
++                                       startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: size * 0.35))
++            .overlay(RoundedRectangle(cornerRadius: size * 0.35).strokeBorder(.white.opacity(0.85), lineWidth: max(1, size * 0.1)))
++            .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
++            .rotationEffect(.degrees(8))
++            .offset(x: size * 0.5, y: -size * 0.5)
++            .accessibilityIdentifier("box.new")
++    }
++}
++
++// MARK: Opening
++
++/// The library coming on when the app opens: dark at first, a band of light sweeps the shelf from left to right and the boxes
++/// light up as it passes, then a soft glow fades. About 1.3 s; any button or a touch skips it.
++struct LibraryIntro: View {
++    let start: Date
++    /// 1.3 s; `--intro-length` slows it down for the frame-by-frame review.
++    static let length: Double = {
++        let args = ProcessInfo.processInfo.arguments
++        if let at = args.firstIndex(of: "--intro-length"), at + 1 < args.count, let value = Double(args[at + 1]) { return value }
++        return 1.3
++    }()
++    var body: some View {
++        TimelineView(.animation) { timeline in
++            let t = timeline.date.timeIntervalSince(start)
++            let sweep = min(1, max(0, t / (Self.length * 0.8)))          // where the light is, across the width
++            let eased = sweep * sweep * (3 - 2 * sweep)
++            let after = max(0, (t - Self.length * 0.8) / (Self.length * 0.2))
++            GeometryReader { geometry in
++                let w = geometry.size.width, h = geometry.size.height
++                let x = -0.15 + eased * 1.3                                // the band's centre, as a share of the width
++                ZStack {
++                    // The dark, still over what the light has not reached yet.
++                    Rectangle().fill(.black)
++                        .mask(LinearGradient(stops: [.init(color: .clear, location: max(0, x - 0.12)),
++                                                     .init(color: .black, location: min(1, max(0.001, x + 0.02)))],
++                                             startPoint: .leading, endPoint: .trailing))
++                        .opacity(1 - after)
++                    // The band of light, and its glow on the floor.
++                    LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .white.opacity(0.55), location: 0.5),
++                                           .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
++                        .frame(width: w * 0.22)
++                        .position(x: x * w, y: h / 2)
++                        .opacity(sweep < 1 ? 1 : 0)
++                        .blendMode(.plusLighter)
++                    RadialGradient(colors: [ShellPalette.cream.opacity(0.35), .clear], center: .center, startRadius: 0, endRadius: w * 0.5)
++                        .opacity(sweep < 1 ? 0 : 0.8 * (1 - after))
++                        .blendMode(.plusLighter)
++                }
++            }
++        }
++        .ignoresSafeArea()
++        .allowsHitTesting(false)
++        .accessibilityHidden(true)
++    }
++}
++
++/// What outlives a library view: the opening runs once per launch, and the banner's timer knows when a newer one replaced it.
++@MainActor enum LibraryClock {
++    static var introPlayed = false
++    static var introRunning = false
++    static var notice = 0
++}
 diff --git a/frontend-ios/Sources/ShellUI/LibraryView.swift b/frontend-ios/Sources/ShellUI/LibraryView.swift
-index eb5e2ef..9dccdeb 100644
+index eb5e2ef..49c20b1 100644
 --- a/frontend-ios/Sources/ShellUI/LibraryView.swift
 +++ b/frontend-ios/Sources/ShellUI/LibraryView.swift
 @@ -29,7 +29,8 @@ enum ShellLayout: Equatable {
@@ -3410,7 +3631,7 @@ index eb5e2ef..9dccdeb 100644
      public let controllers: [ControllerInfo]
      public let globalPadMap: PadMap
      /// The controller's state while the button test is open, from the host.
-@@ -37,6 +38,30 @@ public struct LibraryView: View {
+@@ -37,6 +38,36 @@ public struct LibraryView: View {
      public var actions: ShellActions
      public var input: ShellInput?
      @State private var selectedID: String?
@@ -3438,10 +3659,16 @@ index eb5e2ef..9dccdeb 100644
 +    /// The app is in front (not in the background, not under another app): from the application's own notifications, which a
 +    /// UIKit host sends as a SwiftUI app does.
 +    @State private var appActive = true
++    /// The opening's start while it runs (see LibraryIntro), the controller banner, and the games that wear the New sticker.
++    @State private var introStart: Date?
++    @State private var controllerNotice: ControllerNotice?
++    @State private var newIDs: Set<String> = []
++    /// The opening plays when the app opens (the host asks for it; the demo and the tests only with `--intro`).
++    private let intro: Bool
      @State private var settingsOpen: Bool
      @State private var shellSettingsOpen: Bool
      @State private var controllersOpen: Bool
-@@ -50,6 +75,11 @@ public struct LibraryView: View {
+@@ -50,6 +81,11 @@ public struct LibraryView: View {
      /// The button-mapping card, while open.
      @State private var padMapping: PadMappingState?
      @State private var buttonTestOpen: Bool
@@ -3453,7 +3680,7 @@ index eb5e2ef..9dccdeb 100644
      @State private var focus: FocusAppearance
      @State private var targets = FocusTargetBuffer()
      @State private var settingsPosition = ScrollPosition()
-@@ -66,22 +96,29 @@ public struct LibraryView: View {
+@@ -66,22 +102,30 @@ public struct LibraryView: View {
      @FocusState private var keyboardFocus: Bool
      @Environment(\.accessibilityReduceMotion) private var reduceMotion
      @Environment(\.dynamicTypeSize) private var typeSize
@@ -3468,7 +3695,8 @@ index eb5e2ef..9dccdeb 100644
 -                initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false) {
 -        self.games = games
 +                initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false,
-+                initialInfoOpen: Bool = false, initialBoxOpen: Bool = false) {
++                initialInfoOpen: Bool = false, initialBoxOpen: Bool = false, intro: Bool = false) {
++        self.intro = intro
 +        self.allGames = games
          self.controllers = controllers
          self.globalPadMap = globalPadMap
@@ -3485,12 +3713,20 @@ index eb5e2ef..9dccdeb 100644
          _settingsOpen = State(initialValue: initialDetailOpen)
          _controllersOpen = State(initialValue: initialControllersOpen)
          _shellSettingsOpen = State(initialValue: initialShellSettingsOpen)
-@@ -89,6 +126,14 @@ public struct LibraryView: View {
+@@ -89,6 +133,22 @@ public struct LibraryView: View {
          _touchMode = State(initialValue: !initialFocusVisible)
      }
      private var selected: GameDetail? { games.first { $0.id == selectedID } ?? games.first }
 +    /// The games of the platform the selector shows.
-+    private var games: [GameDetail] { platforms.count > 1 ? allGames.filter { $0.game.platform == platform } : allGames }
++    private var games: [GameDetail] {
++        let shown = platforms.count > 1 ? allGames.filter { $0.game.platform == platform } : allGames
++        guard !newIDs.isEmpty else { return shown }
++        return shown.map { detail in
++            var detail = detail
++            detail.game.isNew = newIDs.contains(detail.id)
++            return detail
++        }
++    }
 +    /// The platforms, in the order of their first game: Switch first, as the app's own games come first.
 +    private var platforms: [String] {
 +        var seen: [String] = []
@@ -3500,7 +3736,7 @@ index eb5e2ef..9dccdeb 100644
  
      public var body: some View {
          GeometryReader { geometry in
-@@ -104,7 +149,10 @@ public struct LibraryView: View {
+@@ -104,7 +164,10 @@ public struct LibraryView: View {
              let paneCovers = settingsOpen && !floating
              let panelOverLibrary = settingsOpen && floating
              ZStack(alignment: .topLeading) {
@@ -3512,7 +3748,7 @@ index eb5e2ef..9dccdeb 100644
                  if games.isEmpty {
                      EmptyLibraryView()
                          .overlay(alignment: .topTrailing) {
-@@ -114,12 +162,40 @@ public struct LibraryView: View {
+@@ -114,12 +177,40 @@ public struct LibraryView: View {
                              }.padding(.top, 6).padding(.trailing, 16)
                          }
                  } else if let selected {
@@ -3553,7 +3789,7 @@ index eb5e2ef..9dccdeb 100644
                      if panelOverLibrary {
                          // The same dimming and dismissal as the Controllers overlay.
                          Color.black.opacity(0.55 * (settingsOpen && !controllersOpen ? 1 - min(1, edgeDrag / pane) : 1)).ignoresSafeArea()
-@@ -147,6 +223,40 @@ public struct LibraryView: View {
+@@ -147,6 +238,40 @@ public struct LibraryView: View {
                          .accessibilityAddTraits(settingsOpen ? .isModal : [])
                          .transformPreference(FocusTargets.self) { if !settingsOpen { $0.removeAll() } }
                  }
@@ -3594,7 +3830,7 @@ index eb5e2ef..9dccdeb 100644
                  if let id = helpGameID, let game = games.first(where: { $0.id == id })?.game {
                      Color.black.opacity(0.55).ignoresSafeArea().accessibilityHidden(true)
                          .onTapGesture { closeHelp() }
-@@ -235,13 +345,16 @@ public struct LibraryView: View {
+@@ -235,13 +360,16 @@ public struct LibraryView: View {
              .transformPreference(FocusTargets.self) { values in
                  values = values.filter { target in
                      if buttonTestOpen { return target.id.hasPrefix("test.") }
@@ -3612,7 +3848,7 @@ index eb5e2ef..9dccdeb 100644
                  }
              }
              .coordinateSpace(name: "shell")
-@@ -265,6 +378,9 @@ public struct LibraryView: View {
+@@ -265,6 +393,9 @@ public struct LibraryView: View {
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
          .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
@@ -3622,13 +3858,31 @@ index eb5e2ef..9dccdeb 100644
          .environment(\.shellPickChoice, { request in openChoice(request) })
          .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
          .environment(\.shellOpenButtonTest, { openButtonTest() })
-@@ -272,9 +388,36 @@ public struct LibraryView: View {
+@@ -272,9 +403,68 @@ public struct LibraryView: View {
          .environment(\.shellAskDelete, { game in openDelete(game.id) })
          .environment(\.shellFocus, focus)
          .environment(\.shellInputDevice, device)
 +        .alert(ShellStrings.text("The Nintendo Switch 2 app is not installed on this device."),
 +               isPresented: Binding(get: { appLinkFailed != nil }, set: { if !$0 { appLinkFailed = nil } })) {
 +            Button(ShellStrings.text("Close"), role: .cancel) {}
++        }
++        .overlay(alignment: .top) {
++            if let controllerNotice, webGame == nil {
++                ControllerNoticeBanner(notice: controllerNotice)
++                    .padding(.top, 12)
++                    .transition(.move(edge: .top).combined(with: .opacity))
++            }
++        }
++        .overlay {
++            if let introStart {
++                ZStack {
++                    LibraryIntro(start: introStart)
++                    // A touch skips it.
++                    Color.clear.contentShape(Rectangle()).ignoresSafeArea().onTapGesture { endIntro() }
++                        .accessibilityElement().accessibilityAddTraits(.isButton)
++                        .accessibilityLabel(ShellStrings.text("Close")).accessibilityIdentifier("intro.skip")
++                }
++            }
 +        }
          .foregroundStyle(.white)
          .font(ShellFonts.font(15)).tint(ShellPalette.cream).preferredColorScheme(.dark)
@@ -3638,7 +3892,21 @@ index eb5e2ef..9dccdeb 100644
 +        .onChange(of: previewID) { _, _ in lastActivity = Date() }
 +        .onChange(of: selectedID) { _, _ in if !showcase { lastActivity = Date() } }
 +        // The music: on with the library, quieter in a box, off while a game plays in the browser or another app.
-+        .onAppear { if webGame == nil { MenuMusic.start(level: boxOpen ? MenuMusic.boxLevel : 1) } }
++        // The opening once per launch, then the music; without it the music at once.
++        .onAppear {
++            if intro && !reduceMotion && !LibraryClock.introPlayed {
++                LibraryClock.introPlayed = true
++                LibraryClock.introRunning = true
++                introStart = Date()
++                Task { @MainActor in
++                    try? await Task.sleep(for: .seconds(LibraryIntro.length))
++                    endIntro()
++                }
++            } else if webGame == nil { MenuMusic.start(level: boxOpen ? MenuMusic.boxLevel : 1) }
++        }
++        .onChange(of: controllers) { old, new in if let notice = ControllerNotice.change(from: old, to: new) { showNotice(notice) } }
++        // The New stickers, once the host has its games (an empty list first would make every game new later).
++        .onChange(of: allGames.map(\.id), initial: true) { _, ids in if !ids.isEmpty { newIDs = NewGames.load(ids) } }
 +        .onChange(of: boxOpen) { _, open in
 +            lastActivity = Date()
 +            if open { MenuMusic.duck(to: MenuMusic.boxLevel, over: 0.6) } else if webGame == nil { MenuMusic.start() }
@@ -3648,7 +3916,7 @@ index eb5e2ef..9dccdeb 100644
 +        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
 +            appActive = true
 +            lastActivity = Date()
-+            if webGame == nil { MenuMusic.start(level: boxOpen ? MenuMusic.boxLevel : 1) }
++            if webGame == nil && !LibraryClock.introRunning { MenuMusic.start(level: boxOpen ? MenuMusic.boxLevel : 1) }
 +        }
 +        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
 +            appActive = false
@@ -3659,7 +3927,7 @@ index eb5e2ef..9dccdeb 100644
          // A hardware keyboard, as on the Mac: arrows move, Return activates, Escape goes back, O opens game settings,
          // Y opens controllers.
          .focusable().focused($keyboardFocus).focusEffectDisabled()
-@@ -289,15 +432,18 @@ public struct LibraryView: View {
+@@ -289,15 +479,18 @@ public struct LibraryView: View {
          .onKeyPress("y") { handle(.controllers, from: .keyboard); return .handled }
          .onDisappear { targets.values.removeAll() }
          .onChange(of: games.map(\.id)) { _, ids in
@@ -3681,8 +3949,28 @@ index eb5e2ef..9dccdeb 100644
                  .equatable()
                  .transition(.opacity)
          } else {
-@@ -362,12 +508,14 @@ public struct LibraryView: View {
+@@ -360,14 +553,39 @@ public struct LibraryView: View {
  
+     // MARK: Actions and focus
+ 
++    /// The opening ends (its time is up, or a button or a touch skipped it) and the music starts.
++    private func endIntro() {
++        guard LibraryClock.introRunning else { return }
++        LibraryClock.introRunning = false
++        lastActivity = Date()
++        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { introStart = nil }
++        if webGame == nil { MenuMusic.start(level: boxOpen ? MenuMusic.boxLevel : 1) }
++    }
++    /// A controller came or went: its banner for a few seconds; a newer one replaces it and keeps its own time.
++    private func showNotice(_ notice: ControllerNotice) {
++        LibraryClock.notice += 1
++        let mine = LibraryClock.notice
++        withAnimation(reduceMotion ? nil : .spring(duration: 0.45)) { controllerNotice = notice }
++        Task { @MainActor in
++            try? await Task.sleep(for: .seconds(3.5))
++            if LibraryClock.notice == mine { withAnimation(reduceMotion ? nil : .easeIn(duration: 0.3)) { controllerNotice = nil } }
++        }
++    }
      /// An action that did not come from a controller or key came from touch: hints and focus ring step back.
      private func noteTouch() {
 +        lastActivity = Date()
@@ -3692,11 +3980,16 @@ index eb5e2ef..9dccdeb 100644
      }
      private func primary(_ detail: GameDetail) {
          noteTouch()
++        // Played: the New sticker comes off for good.
++        if detail.game.state == .playable, newIDs.contains(detail.id) {
++            newIDs.remove(detail.id)
++            NewGames.played(detail.id)
++        }
 +        if detail.game.webURL != nil, detail.game.state == .playable { openWeb(detail); return }
          if detail.game.state.needsHelp { openHelp(detail.id); return }
          switch detail.game.state {
          case .playable: actions.onPlay(detail.id)
-@@ -376,9 +524,94 @@ public struct LibraryView: View {
+@@ -376,9 +594,94 @@ public struct LibraryView: View {
          case .broken: actions.onShowLog(detail.id)
          }
      }
@@ -3791,7 +4084,7 @@ index eb5e2ef..9dccdeb 100644
          selectedID = id
          actions.onSelect(id)
          settingsPosition.scrollTo(edge: .top)
-@@ -406,7 +639,72 @@ public struct LibraryView: View {
+@@ -406,7 +709,72 @@ public struct LibraryView: View {
      }
      private func closeSettings() {
          settingsOpen = false
@@ -3865,7 +4158,7 @@ index eb5e2ef..9dccdeb 100644
      }
      private func openControllers() { guard !shellSettingsOpen else { return }; noteTouch(); controllersOpen = true; focus.id = "ctl.close" }
      private func openShellSettings() { noteTouch(); shellSettingsOpen = true; focus.id = "shs.close" }
-@@ -493,7 +791,9 @@ public struct LibraryView: View {
+@@ -493,7 +861,9 @@ public struct LibraryView: View {
          focus.id = "ctl.test"
      }
      private func back() {
@@ -3876,7 +4169,7 @@ index eb5e2ef..9dccdeb 100644
          else if padMapping?.row != nil { closePadRow() }
          else if padMapping != nil { closePadMapping() }
          else if choice != nil { closeChoice() }
-@@ -502,11 +802,28 @@ public struct LibraryView: View {
+@@ -502,11 +872,30 @@ public struct LibraryView: View {
          else if controllersOpen { controllersOpen = false; focus.id = "lib.controllers" }
          else if shellSettingsOpen { closeShellSettings() }
          else if settingsOpen { closeSettings() }
@@ -3889,6 +4182,8 @@ index eb5e2ef..9dccdeb 100644
 +        // A browser game takes every button; only Menu and View together bring the library back.
 +        if webGame != nil { if action == .exitGame { closeWeb() }; return }
 +        lastActivity = Date()
++        // Any button skips the opening and does nothing else.
++        if LibraryClock.introRunning { endIntro(); return }
 +        // Any button ends the showcase and does nothing else.
 +        if showcase { endShowcase(); return }
 +        if action == .exitGame { return }
@@ -3905,7 +4200,7 @@ index eb5e2ef..9dccdeb 100644
          // Every controller button belongs to the button test while it is open: it closes on B held, touch or Escape.
          if buttonTestOpen, case .controller = source { return }
          if device != source { device = source }
-@@ -514,14 +831,22 @@ public struct LibraryView: View {
+@@ -514,14 +903,22 @@ public struct LibraryView: View {
          focus.visible = true
          if focus.id == nil || !targets.values.contains(where: { $0.id == focus.id }) {
              focus.id = defaultFocus
@@ -3929,7 +4224,7 @@ index eb5e2ef..9dccdeb 100644
              // In Cover Flow the focused cover is always the middle one: left and right move the carousel by one.
              if layout.isCoverFlow, let id = focus.id, id.hasPrefix("lib.tile."), let index = games.firstIndex(where: { $0.id == selected?.id }) {
                  let next = min(games.count - 1, max(0, index + (action == .left ? -1 : 1)))
-@@ -541,6 +866,8 @@ public struct LibraryView: View {
+@@ -541,6 +938,8 @@ public struct LibraryView: View {
          if let id = focus.id, id.hasPrefix("lib.tile.") { select(String(id.dropFirst("lib.tile.".count))) }
      }
      private var defaultFocus: String? {
@@ -3938,7 +4233,7 @@ index eb5e2ef..9dccdeb 100644
          if buttonTestOpen { return "test.close" }
          if let padMapping { return padMapping.row == nil ? "map.close" : "map.back" }
          if let choice { return "pick." + choice.row.value }
-@@ -549,6 +876,7 @@ public struct LibraryView: View {
+@@ -549,6 +948,7 @@ public struct LibraryView: View {
          if controllersOpen { return "ctl.close" }
          if shellSettingsOpen { return "shs.close" }
          if settingsOpen { return "set.back" }
@@ -4117,7 +4412,7 @@ index 0000000..1a98783
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
-index 2a2db87..aa1849c 100644
+index 2a2db87..0e81843 100644
 --- a/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 +++ b/frontend-ios/Sources/ShellUI/Resources/Localizable.xcstrings
 @@ -1,6 +1,126 @@
@@ -5017,7 +5312,7 @@ index 2a2db87..aa1849c 100644
      "Your games": {
        "localizations": {
          "en": {
-@@ -5936,7 +6664,1567 @@
+@@ -5936,7 +6664,1687 @@
            }
          }
        }
@@ -6581,6 +6876,126 @@ index 2a2db87..aa1849c 100644
 +          }
 +        }
 +      }
++    },
++    "Controller connected": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Controller connected"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Manette connectée"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Controller verbunden"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Controller connesso"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Handkontroll ansluten"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "手柄已连接"
++          }
++        }
++      }
++    },
++    "Controller disconnected": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Controller disconnected"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Manette déconnectée"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Controller getrennt"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Controller disconnesso"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Handkontroll frånkopplad"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "手柄已断开"
++          }
++        }
++      }
++    },
++    "New": {
++      "localizations": {
++        "en": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "New"
++          }
++        },
++        "fr": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Nouveau"
++          }
++        },
++        "de": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Neu"
++          }
++        },
++        "it": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Nuovo"
++          }
++        },
++        "sv": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "Ny"
++          }
++        },
++        "zh-Hans": {
++          "stringUnit": {
++            "state": "translated",
++            "value": "新"
++          }
++        }
++      }
      }
    },
    "version": "1.0"
@@ -6647,10 +7062,10 @@ index 6c2c8d0..6d0d761 100644
      public static func metaLine(_ parts: String?...) -> String {
          parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
 diff --git a/frontend-ios/Sources/ShellUI/ShellInputs.swift b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-index 4533d0e..a4c72a2 100644
+index 4533d0e..6848020 100644
 --- a/frontend-ios/Sources/ShellUI/ShellInputs.swift
 +++ b/frontend-ios/Sources/ShellUI/ShellInputs.swift
-@@ -24,8 +24,34 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -24,8 +24,36 @@ public struct GameTile: Identifiable, Equatable, Sendable {
      public var state: GameState
      /// Already localized, such as "Played today". Nil leaves the game out of Recently played.
      public var recentlyPlayed: String?
@@ -6678,6 +7093,8 @@ index 4533d0e..a4c72a2 100644
 +    /// The back of the game's box (`back.<ext>` beside the banner), as a file: the library decodes it only when the player turns
 +    /// the box. Nil: the back is drawn from the title and the synopsis.
 +    public var back: URL?
++    /// Added since the player last looked and not played yet: the box wears a "New" sticker (set by the library).
++    public var isNew = false
      public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
 -                state: GameState = .playable, recentlyPlayed: String? = nil) {
 +                state: GameState = .playable, recentlyPlayed: String? = nil, stats: PlayStats = PlayStats(), backdrop: Artwork? = nil,
@@ -6686,7 +7103,7 @@ index 4533d0e..a4c72a2 100644
          self.id = id
          self.title = title
          self.subtitle = subtitle
-@@ -33,6 +59,95 @@ public struct GameTile: Identifiable, Equatable, Sendable {
+@@ -33,6 +61,95 @@ public struct GameTile: Identifiable, Equatable, Sendable {
          self.icon = icon
          self.state = state
          self.recentlyPlayed = recentlyPlayed
@@ -6782,7 +7199,7 @@ index 4533d0e..a4c72a2 100644
      }
  }
  
-@@ -158,7 +273,9 @@ public enum InputDevice: Equatable, Sendable {
+@@ -158,7 +275,9 @@ public enum InputDevice: Equatable, Sendable {
  
  /// An optional event supplied by the host's input adapter. Increment sequence for repeated presses.
  public struct ShellInput: Equatable, Sendable {
@@ -6793,7 +7210,7 @@ index 4533d0e..a4c72a2 100644
      public var sequence: Int
      public var action: Action
      public var device: InputDevice
-@@ -218,6 +335,11 @@ public struct ShellActions {
+@@ -218,6 +337,11 @@ public struct ShellActions {
      public var onButtonTest: (Bool) -> Void
      /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
      public var onDeleteGame: (_ gameID: String, _ saves: Bool) -> Void
@@ -7606,6 +8023,39 @@ index 1c29841..a647667 100644
      @Test func versionHasItsWord() {
          #expect(ShellFormat.version("1.0.0") == "Version 1.0.0")
          #expect(ShellFormat.version("") == "")
+diff --git a/frontend-ios/Tests/ShellUITests/LibraryExtrasTests.swift b/frontend-ios/Tests/ShellUITests/LibraryExtrasTests.swift
+new file mode 100644
+index 0000000..c3080d1
+--- /dev/null
++++ b/frontend-ios/Tests/ShellUITests/LibraryExtrasTests.swift
+@@ -0,0 +1,27 @@
++import Foundation
++import Testing
++@testable import ShellUI
++
++/// The controller banner's news and the New stickers' bookkeeping.
++@Suite struct LibraryExtrasTests {
++    let pad = ControllerInfo(id: "a", name: "GameSir G8 Plus", player: "Player 1", batteryPercent: 64)
++    let other = ControllerInfo(id: "b", name: "Pro Controller", player: "Player 2")
++
++    @Test func aControllerThatArrivesOrLeavesIsNews() {
++        let came = ControllerNotice.change(from: [], to: [pad])
++        #expect(came?.kind == .connected && came?.name == "GameSir G8 Plus" && came?.batteryPercent == 64)
++        let left = ControllerNotice.change(from: [pad, other], to: [pad])
++        #expect(left?.kind == .disconnected && left?.name == "Pro Controller")
++        var drained = pad
++        drained.batteryPercent = 12
++        #expect(ControllerNotice.change(from: [pad], to: [drained]) == nil)
++        #expect(ControllerNotice.change(from: [], to: [drained])?.low == true)
++    }
++
++    @Test func nothingIsNewTheFirstTime() {
++        let first = NewGames.resolve(ids: ["a", "b"], seen: nil)
++        #expect(first.fresh.isEmpty && first.seen == ["a", "b"])
++        let later = NewGames.resolve(ids: ["a", "b", "c"], seen: first.seen)
++        #expect(later.fresh == ["c"] && later.seen == ["a", "b"])
++    }
++}
 diff --git a/frontend-ios/Tests/ShellUITests/LibraryLookTests.swift b/frontend-ios/Tests/ShellUITests/LibraryLookTests.swift
 new file mode 100644
 index 0000000..c00c351
@@ -7657,10 +8107,10 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..f72ebbd
+index 0000000..2623d85
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,344 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -7976,5 +8426,32 @@ index 0000000..f72ebbd
 +            usleep(700_000)
 +            shot("ambience-\(word)-2")
 +        }
++    }
++
++    /// The opening slowed down, frame by frame; a touch and a button skip it; the controller banner; the New sticker.
++    func testOpeningBannerAndNew() {
++        launch(["--screen", "library", "--intro", "--intro-length", "7"])
++        for frame in 1...5 { shot("intro-\(frame)"); usleep(1_000_000) }
++        launch(["--screen", "library", "--intro", "--intro-length", "60"])
++        let skip = app.descendants(matching: .any)["intro.skip"]
++        XCTAssertTrue(skip.exists, "the opening is not there")
++        skip.tap()
++        sleep(1)
++        XCTAssertFalse(skip.exists, "a touch did not skip the opening")
++        launch(["--screen", "library", "--intro", "--intro-length", "60", "--input-test"])
++        XCTAssertTrue(skip.exists, "the opening is not there")
++        app.buttons["qa.input.down"].tap()
++        sleep(1)
++        XCTAssertFalse(skip.exists, "a button did not skip the opening")
++
++        launch(["--screen", "library", "--controller-notice"])
++        let notice = app.descendants(matching: .any)["controller.notice"]
++        XCTAssertTrue(notice.waitForExistence(timeout: 5), "no banner for the controller")
++        shot("controller-notice")
++        sleep(5)
++        XCTAssertFalse(notice.exists, "the banner stayed")
++
++        launch(["--screen", "library", "--new-games", "orbit,moon"])
++        shot("new-sticker")
 +    }
 +}

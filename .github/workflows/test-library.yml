@@ -111,6 +111,7 @@ jobs:
           run testPlatforms "" || fail=1
           run testTurnAndShowcase ipad-turn || fail=1
           run testAmbiences "" || fail=1
+          run testOpeningBannerAndNew "" || fail=1
           ls -la "$RUNNER_TEMP/out" "$RUNNER_TEMP/out/shots"
           exit $fail
 
