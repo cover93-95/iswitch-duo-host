@@ -7458,10 +7458,10 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..34a97be
+index 0000000..1ea4d98
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,306 @@
+@@ -0,0 +1,307 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -7520,8 +7520,9 @@ index 0000000..34a97be
 +        sleep(1)
 +        shot("touch-02b-box-back")
 +        XCTAssertFalse(app.buttons["box.cart"].exists, "the drag opened the box")
-+        // A tap on the box opens it, coming round to its front.
-+        app.descendants(matching: .any)["box.case"].firstMatch.tap()
++        // A tap on the box opens it, coming round to its front. Tapped where the box is: turned half round, its element's frame
++        // is no longer where it is drawn.
++        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
 +        for index in 1...4 {
 +            usleep(250_000)
 +            shot("touch-02-box-opening-\(index)")
