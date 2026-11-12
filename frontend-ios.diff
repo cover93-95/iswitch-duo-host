@@ -225,14 +225,14 @@ index 0000000..8a1e9e6
 +    }
 +}
 diff --git a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
-index 5b7eba5..cb260eb 100644
+index 5b7eba5..8502954 100644
 --- a/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
 +++ b/frontend-ios/Sources/ShellDemo/ShellDemoApp.swift
 @@ -29,7 +29,19 @@ struct DemoScreen: View {
      /// Real controllers, through the reusable adapter in ShellControllers.
      @State private var gamepads = GamepadAdapter()
      @State private var connected: [ConnectedController] = []
-+    /// `--controller-notice`: no controller at first, one a moment later, for the banner.
++    /// `--controller-notice`: no controller at first, one 14 s later (once the test has the app in hand), for the banner.
 +    @State private var noticeArrived = !ProcessInfo.processInfo.arguments.contains("--controller-notice")
      private var args: [String] { ProcessInfo.processInfo.arguments }
 +    init() {
@@ -265,7 +265,7 @@ index 5b7eba5..cb260eb 100644
              gamepads.onInput = { action, device in send(action, from: device) }
              gamepads.onControllersChange = { connected = $0 }
              gamepads.start()
-+            if !noticeArrived { Task { try? await Task.sleep(for: .seconds(2.5)); noticeArrived = true } }
++            if !noticeArrived { Task { try? await Task.sleep(for: .seconds(14)); noticeArrived = true } }
          }
          .onDisappear { gamepads.stop() }
      }
@@ -8107,7 +8107,7 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..2623d85
+index 0000000..cb498a5
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 @@ -0,0 +1,344 @@
@@ -8446,7 +8446,7 @@ index 0000000..2623d85
 +
 +        launch(["--screen", "library", "--controller-notice"])
 +        let notice = app.descendants(matching: .any)["controller.notice"]
-+        XCTAssertTrue(notice.waitForExistence(timeout: 5), "no banner for the controller")
++        XCTAssertTrue(notice.waitForExistence(timeout: 20), "no banner for the controller")
 +        shot("controller-notice")
 +        sleep(5)
 +        XCTAssertFalse(notice.exists, "the banner stayed")
