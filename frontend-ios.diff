@@ -1812,10 +1812,10 @@ index 8651917..5da2538 100644
 +}
 diff --git a/frontend-ios/Sources/ShellUI/GameBoxView.swift b/frontend-ios/Sources/ShellUI/GameBoxView.swift
 new file mode 100644
-index 0000000..65f88b3
+index 0000000..05d5b82
 --- /dev/null
 +++ b/frontend-ios/Sources/ShellUI/GameBoxView.swift
-@@ -0,0 +1,726 @@
+@@ -0,0 +1,734 @@
 +import SwiftUI
 +
 +/// A game's box, opened in 3D: it turns to face the player, then its cover swings open on the left hinge like a book. Inside, the
@@ -1897,21 +1897,6 @@ index 0000000..65f88b3
 +                    .opacity(shown ? 1 : 0)
 +                    .offset(y: -height * 0.03)
 +                    .onTapGesture { if phase == .idle { toggle() } }
-+                    // A drag across the closed box turns it over, following the finger, and it settles on a face when let go.
-+                    .highPriorityGesture(DragGesture(minimumDistance: 12)
-+                        .onChanged { drag in
-+                            guard !isOpen, phase == .idle else { return }
-+                            let start = turnStart ?? turn
-+                            if turnStart == nil { turnStart = turn }
-+                            turn = start + BoxTurn.angle(drag: drag.translation.width, width: width)
-+                        }
-+                        .onEnded { drag in
-+                            guard let start = turnStart else { return }
-+                            turnStart = nil
-+                            let end = BoxTurn.settle(start: start, predicted: start + BoxTurn.angle(drag: drag.predictedEndTranslation.width, width: width))
-+                            if end != start { NavSound.tick() }
-+                            withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.15)) { turn = end }
-+                        })
 +                    .accessibilityAction(named: ShellStrings.text("Turn the box")) { turnOver() }
 +                    .accessibilityElement()
 +                    .accessibilityLabel(game.title)
@@ -1919,6 +1904,29 @@ index 0000000..65f88b3
 +                    .accessibilityAddTraits(.isButton)
 +                    .accessibilityAction(named: isOpen ? ShellStrings.text("Close the box") : ShellStrings.text("Open the box"), toggle)
 +                    .accessibilityIdentifier("box.case")
++                if shown && !isOpen && phase == .idle {
++                    // Over the closed box, still while it turns (half a turn round, the case itself takes no touch): a tap opens
++                    // it, a drag across it turns it over, following the finger, settling on a face when let go.
++                    Color.clear
++                        .contentShape(Rectangle())
++                        .frame(width: width, height: height)
++                        .offset(y: -height * 0.03)
++                        .onTapGesture { toggle() }
++                        .highPriorityGesture(DragGesture(minimumDistance: 12)
++                            .onChanged { drag in
++                                let start = turnStart ?? turn
++                                if turnStart == nil { turnStart = turn }
++                                turn = start + BoxTurn.angle(drag: drag.translation.width, width: width)
++                            }
++                            .onEnded { drag in
++                                guard let start = turnStart else { return }
++                                turnStart = nil
++                                let end = BoxTurn.settle(start: start, predicted: start + BoxTurn.angle(drag: drag.predictedEndTranslation.width, width: width))
++                                if end != start { NavSound.tick() }
++                                withAnimation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.15)) { turn = end }
++                            })
++                        .accessibilityHidden(true)
++                }
 +                // The card, as a button over the one in the tray, once the box is open.
 +                if isOpen && phase == .idle {
 +                    Button(action: play) { Color.clear.contentShape(Rectangle()) }
@@ -7450,10 +7458,10 @@ index 0000000..c00c351
 +}
 diff --git a/frontend-ios/UITests/LibraryBoxCaptureTests.swift b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
 new file mode 100644
-index 0000000..e2eba30
+index 0000000..34a97be
 --- /dev/null
 +++ b/frontend-ios/UITests/LibraryBoxCaptureTests.swift
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,306 @@
 +import XCTest
 +
 +/// The box opened from the cover and the game card going into the console, by touch and by controller, and the info panel,
@@ -7650,7 +7658,8 @@ index 0000000..e2eba30
 +        // A tap on the only PS2 game opens its box (it did nothing on the iPhone: the shelf waited for the carousel to settle)
 +        app.buttons["tile.street"].firstMatch.tap()
 +        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 6))
-+        app.buttons["box.toggle"].tap()
++        sleep(1)
++        app.descendants(matching: .any)["box.case"].firstMatch.tap()
 +        XCTAssertTrue(app.buttons["box.cart"].waitForExistence(timeout: 6))
 +        sleep(1)
 +        shot("web-03-box-disc")
@@ -7716,16 +7725,14 @@ index 0000000..e2eba30
 +        launch(["--screen", "library", "--still", "--input-test", "--showcase-after", "8"])
 +        let title = app.staticTexts["hero.title"].firstMatch
 +        XCTAssertTrue(title.waitForExistence(timeout: 5))
-+        let first = title.label
++        let before = title.label
 +        let window = app.windows.firstMatch
 +        window.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.42))
 +            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.42)))
 +        sleep(2)
 +        shot("turn-00-carousel-scrolled")
-+        XCTAssertNotEqual(title.label, first, "a drag on the carousel did not scroll it")
-+        app.buttons["qa.input.left"].tap()
-+        sleep(1)
-+        XCTAssertEqual(title.label, first)
++        XCTAssertNotEqual(title.label, before, "a drag on the carousel did not scroll it")
++        let first = title.label
 +        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.42)).tap()
 +        XCTAssertTrue(app.buttons["box.toggle"].waitForExistence(timeout: 5))
 +        sleep(1)
