@@ -8,8 +8,7 @@ name: Build iOS shell
 on:
   push:
     branches:
-      - codex/oot-shell
-      - oot-shell-v52d-lib
+      - oot-shell-ff4
   workflow_dispatch:
     inputs:
       build:
@@ -24,7 +23,9 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
   EXPECTED_XCODE: Xcode 27.2
   NX2APPLE_COMMIT: 5c0db6cde8bd648f313d404dac45ac55d8c2a62f
-  EXPECTED_CHAIN: b70f92017083
+  EXPECTED_CHAIN: a5e7fb6e4fa4
+  # Moteur FF4 : NX2Apple 1.5.0 (pin nxnative 0c078130) + le fork cheemu21/kid-with-sword-remake ff4 (MIT), voir engine-ff4.diff.
+  NX2APPLE_ENGINE_COMMIT: 0e866231982af5931393118a6b675f0e9aa56f7d
 
 defaults:
   run:
@@ -67,9 +68,14 @@ jobs:
           command -v xcodegen || brew install xcodegen
           python3 -m venv .venv
           .venv/bin/pip install fonttools==4.68.0
-          python3 tools/engine.py sync
-          # Moteur oot5 : nxnative main 24fe1e5a + PR 1584, 1497, 1453, 1368, 1379 + patchs NX2Apple (profil draw_barriers lu au lancement) ; sources publiques uniquement.
-          git -C engine apply "$GITHUB_WORKSPACE/oot/engine-oot.diff"
+          # Moteur : NX2Apple 1.5.0 synchronise a part, puis FF4 et l'hote dans l'app (route C FR) ; sources publiques uniquement.
+          git clone -q --filter=blob:none https://github.com/LNPANDY/NX2Apple.git "$RUNNER_TEMP/nx150"
+          git -C "$RUNNER_TEMP/nx150" checkout -q "$NX2APPLE_ENGINE_COMMIT"
+          git config --global user.name ci; git config --global user.email ci@localhost
+          python3 "$RUNNER_TEMP/nx150/tools/engine.py" sync
+          git -C "$RUNNER_TEMP/nx150/engine" apply --binary "$GITHUB_WORKSPACE/oot/engine-ff4.diff"
+          test ! -e engine
+          mv "$RUNNER_TEMP/nx150/engine" engine
           # Bibliotheque : boites de jeu debout, reflets, selection lumineuse (interface seulement, aucune donnee de jeu).
           git apply "$GITHUB_WORKSPACE/oot/frontend-ios.diff"
           grep -q "\"$EXPECTED_CHAIN\"" engine/dm/gfx/nvn/dmsh_chain.h
@@ -79,7 +85,7 @@ jobs:
           CHAIN=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' engine/dm/gfx/nvn/dmsh_chain.h)
           test -n "$CHAIN"
           echo "CHAIN=$CHAIN" >> "$GITHUB_ENV"
-          T=010015100B514000; FW="$RUNNER_TEMP/fw/DmGame$T.framework"; mkdir -p "$FW/dm"
+          T=0400486024DEC000; FW="$RUNNER_TEMP/fw/DmGame$T.framework"; mkdir -p "$FW/dm"
           echo '__attribute__((used, visibility("default"))) const char dmgame_image_marker[] = "DmGame";' > "$RUNNER_TEMP/marker.c"
           xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -dynamiclib \
             -install_name "@rpath/DmGame$T.framework/DmGame$T" "$RUNNER_TEMP/marker.c" -o "$FW/DmGame$T"
@@ -107,7 +113,7 @@ jobs:
 
           DM_BUNDLE_ID: local.iswitchduo.botw
           DM_SHELL_NAME: NX2 Switch 2
-          DM_APP_VERSION: 1.4.29
+          DM_APP_VERSION: 1.5.0
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
