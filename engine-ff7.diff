@@ -48,10 +48,10 @@ index 1487d7b..906d606 100644
  - [The blend helper's output reference on iOS](../../../docs/reference/shaders.md#the-blend-helpers-output-reference-on-ios): resolved, 22,296 of 42,848 Mac shaders failed to compile on macOS 26 ([GitHub issue #2272](https://github.com/seedds/nxnative/issues/2272)); the Mac compile now names the host's minimum macOS.
  - [A NaN colour under a zero blend weight](../../../docs/reference/shaders.md#a-nan-colour-under-a-zero-blend-weight): resolved, white clouds over the ground mist between Kokiri Forest and Hyrule Field and over the ferns at the camera in Kokiri Forest ([issue #1839](https://github.com/seedds/nxnative/issues/1839)). The mist shader `5ad65c0eefd09c7f` writes NaN at alpha 0 where its layer has density 0; NVIDIA's blender, with the option NVN's driver sets, adds nothing there, Apple's stored the NaN.
 diff --git a/dm/games/0400486024DEC000/game.tsv b/dm/games/0400486024DEC000/game.tsv
-index 45ccc5e..a89a0f8 100644
+index 45ccc5e..1298f92 100644
 --- a/dm/games/0400486024DEC000/game.tsv
 +++ b/dm/games/0400486024DEC000/game.tsv
-@@ -46,3 +46,29 @@ draw_barriers	game
+@@ -46,3 +46,33 @@ draw_barriers	game
  # As Tears of the Kingdom: the terrain's height, blend and hole maps are written by the CPU into textures after they are created. Without these keys they stay zero: holes in the ground and the wrong materials
  tex_flush_upload	on
  tex_dirty_upload	on
@@ -81,8 +81,12 @@ index 45ccc5e..a89a0f8 100644
 +# The game's compute dispatches with no barrier of its between them run side by side (nvn_mtl.m dispatch_enc): 117 at the start of a frame in Kokiri Forest waited each for the one
 +# before, 5.7 ms; side by side 3.7 ms, the frame 27.1 -> 24.9 ms (docked, Apple M4 Pro), the picture within run-to-run noise
 +dispatch_overlap	on
++# The 3D views' size at render scale 1.0, docked then handheld, for the launcher's Render scale row in pixels (settings.py render_base): the game renders its 3D at 65/64 of the
++# output's height times the scale (a Mac run and the owner's iPhone logs at 0.6: handheld 1169x658 for 1920x1080, Wide view's 1432x658 for 2352x1080, docked 1909x877 for 3136x1440)
++# and its width from that height and the output's shape (LauncherSettings.swift rangeLabel takes Wide view's shape from the screen)
++render_base	2599x1462 1949x1097
 diff --git a/dm/games/0400486024DEC000/patches.py b/dm/games/0400486024DEC000/patches.py
-index cade577..13c2988 100644
+index cade577..4baa27a 100644
 --- a/dm/games/0400486024DEC000/patches.py
 +++ b/dm/games/0400486024DEC000/patches.py
 @@ -32,6 +32,9 @@ def frame_step(ctx):
@@ -95,7 +99,7 @@ index cade577..13c2988 100644
  
  # The game's dynamic resolution (game__gfx__DynamicResolutionParam: LoadThreshold, ReduceCounterMax, IncreaseCounterMax and a list of levels, each a ResolutionReduceScale and a
  # Priority; on v131072 levels 0..9 at 0.75..0.333 of 2048x1152, 1536x864 to 683x384). Its update (main+0x805aa0) reads the frame's GPU load (about 0.2 ms a unit) into +0x8, subtracts
-@@ -71,6 +74,119 @@ def dynamic_resolution(ctx):
+@@ -71,6 +74,198 @@ def dynamic_resolution(ctx):
      fs_put(site, [B(site, start)], 'dynamic resolution level: 0 (full resolution), or with state +0x40 (DM_DYNAMIC_RESOLUTION) a climb on the load measured at each level')
      ctx.capabilities.add('DYNAMIC_RESOLUTION')
  
@@ -190,13 +194,14 @@ index cade577..13c2988 100644
 +    # fallback (main+0x14fc7e0) returns it, so with the wider output the 3D was drawn 16:9 and stretched sideways, about 22 % wide on a 2.18:1 iPhone (the owner's
 +    # screenshot: Link, Zelda and Navi fat; PR #1460 at 21:9 on a Mac had said the camera takes its aspect from the render size). Each stub keeps the game's 16:9 in w8,
 +    # then takes the state page's float at +0x110 (the output's width / height, loader.c) when it is not 0. x16 is the scratch register: none of the three uses it
-+    for site, what in ((0x9b5f38, 'camera projection constructor'), (0x2e1be40, 'second camera projection constructor'), (0x14fc7e4, 'aspect getter fallback')):
++    for site, what, mark in ((0x9b5f38, 'camera projection constructor', 0x128), (0x2e1be40, 'second camera projection constructor', 0x12c), (0x14fc7e4, 'aspect getter fallback', 0x130)):
 +        ctx.site(site, (0x72A7FC68).to_bytes(4, 'little').hex())   # movk w8,#0x3fe3,lsl #16 (16:9 = 0x3fe38e39)
 +        start = here(); emit(0x72A7FC68)                       # movk w8,#0x3fe3,lsl #16: the game's 16:9
 +        emit(ADRP(16, here(), ctx.state))
 +        emit(0xB9411210)                                        # ldr w16,[x16,#0x110]
 +        emit(0x34000050)                                        # cbz w16,+8 (0: 16:9 kept)
 +        emit(0x2A1003E8)                                        # mov w8,w16
++        emit(ADRP(16, here(), ctx.state)); emit(0xB9000000 | ((mark // 4) << 10) | 16 << 5 | 8)   # str w8,[x16,#mark]: the aspect it took, for the host's log (loader.c dm_wide_note)
 +        emit(B(here(), site + 4))
 +        ctx.put(site, [B(site, start)], f'wide view: {what} aspect from the state page (0: 16:9)')
 +    # The 2D canvas: main+0xe8303c stores a fixed 1920 x 1080 as the layout canvas's size (+0xe54 / +0xe58) unless one of two flags takes it from the display, so the HUD and
@@ -209,13 +214,91 @@ index cade577..13c2988 100644
 +    emit(0xB9411610)                                            # ldr w16,[x16,#0x114]
 +    emit(0x34000050)                                            # cbz w16,+8 (0: 1920 kept)
 +    emit(0x2A1003E8)                                            # mov w8,w16
++    emit(ADRP(16, here(), ctx.state)); emit(0xB9012608)         # str w8,[x16,#0x124]: the canvas width this path stored (float bits), for the host's log
 +    emit(B(here(), site + 4))
 +    ctx.put(site, [B(site, start)], 'wide view: the 2D canvas width from the state page (0: 1920)')
++    # Three more cameras build the same 16:9 aspect beside a 0.1 near plane (main+0xe07154 w8, the far plane 10000; main+0x27b13f8 w9 and main+0x2e1cb84 w9, a projection set up on
++    # the stack): the constructors above are what the field and town cameras take (a Mac run at 2.174:1: 2.1778 in both, Navi's glow round, 34 x 35 px), and these are the others
++    # (an event or special view's camera), widened the same way so no 3D view stays 16:9. Each keeps the game's 16:9 in its register unless the state page's +0x110 is set
++    for site, rd, what in ((0xe07154, 8, 'third camera'), (0x27b13f8, 9, 'fourth camera'), (0x2e1cb84, 9, 'fifth camera')):
++        ctx.site(site, (0x72A7FC60 | rd).to_bytes(4, 'little').hex())   # movk w<rd>,#0x3fe3,lsl #16
++        start = here(); emit(0x72A7FC60 | rd)                  # the game's 16:9 high half
++        emit(ADRP(16, here(), ctx.state))
++        emit(0xB9411210)                                        # ldr w16,[x16,#0x110]
++        emit(0x34000050)                                        # cbz w16,+8 (0: 16:9 kept)
++        emit(0x2A1003E0 | rd)                                   # mov w<rd>,w16
++        emit(B(here(), site + 4))
++        ctx.put(site, [B(site, start)], f'wide view: the {what}\'s aspect from the state page (0: 16:9)')
++    # The world-to-layout mapping: a point's place on screen (-1 to 1) times 1920 x 1080 gives its place in the game's 3840x2160 2D layout, where a speech bubble or a marker
++    # over a character is drawn (main+0x20c2b0, +0x20c99c, +0x215fb0: mov w8,#1920.0, fmov s0,w8, then times the x). With Wide view the host draws that layout at its own shape in
++    # the middle 16:9 of the screen (nvn_mtl.m wide2d_fix), so the x is taken times the 1080-high output width (2352.0, state +0x114) in place of 1920: the screen's width in
++    # layout units, and a bubble stays over its character to the screen's edges. 0 there (Wide view off): the game's 1920. x16 is free at all three
++    for site in (0x20c2b0, 0x20c99c, 0x215fb0):
++        ctx.site(site, (0x52A89E08).to_bytes(4, 'little').hex())   # mov w8,#0x44f00000 (1920.0)
++        start = here(); emit(0x52A89E08)
++        emit(ADRP(16, here(), ctx.state))
++        emit(0xB9411610)                                        # ldr w16,[x16,#0x114]
++        emit(0x34000050)                                        # cbz w16,+8 (0: 1920 kept)
++        emit(0x2A1003E8)                                        # mov w8,w16
++        emit(B(here(), site + 4))
++        ctx.put(site, [B(site, start)], 'wide view: the world-to-layout x scale from the state page (0: 1920)')
++    # The aspect the 3D draws with: the renderer copies its view's camera (near, far, field of view and aspect at +0x1c8..+0x1d4 of it, 0xa2 bytes, main+0x4c6388) into its own
++    # at +0x3118, and main+0x335650 builds from that copy the camera constants every 3D pass reads (near, far, aspect, the projection and the frustum; copied into the uniform
++    # buffer at main+0x660aac). Mac runs with the host's write watch (DM_CTL watch, nvn_mtl.m DM_WATCH_SCENE) on each: the uniform block from main+0x660aac, the renderer's copy
++    # only from main+0x4c6388, the view's camera never during play, its aspect 0x3fe38e3b from before: the decimal 1.777778 of the game's camera data, which no 16:9 constant
++    # in the code (the constructors' above, the parameter copy's) ever reached; Link 1.25 times too wide on Wide view. After the copy (main+0x4c638c, mov w8,#0x31c0 before
++    # the constants are built) an aspect from 1.75 to 1.875 (bits >> 20 == 0x3fe) is taken as the output's when Wide view is on (state +0x110): the projection, the frustum and
++    # everything built from them follow. x16, x17 and the flags are free there (a call follows)
++    site = 0x4c638c
++    ctx.site(site, (0x52863808).to_bytes(4, 'little').hex())   # mov w8,#0x31c0
++    start = here()
++    emit(0x52862490)                                            # mov w16,#0x3124          the renderer camera's aspect (+0x2f50 + 0x1d4)
++    emit(0xB8706A71)                                            # ldr w17,[x19,x16]
++    emit(0x53147E31)                                            # lsr w17,w17,#20
++    emit(0x710FFA3F)                                            # cmp w17,#0x3fe          1.75 to 1.875
++    emit(0x540000A1)                                            # b.ne +20                (another aspect: as it is)
++    emit(ADRP(17, here(), ctx.state))
++    emit(0xB9411231)                                            # ldr w17,[x17,#0x110]    the output's aspect (0: Wide view off)
++    emit(0x34000051)                                            # cbz w17,+8
++    emit(0xB8306A71)                                            # str w17,[x19,x16]
++    emit(0x52863808)                                            # mov w8,#0x31c0          the original
++    emit(B(here(), site + 4))
++    ctx.put(site, [B(site, start)], 'wide view: the renderer camera\'s 16:9 aspect taken as the output\'s before its constants are built')
++    # The projections the 3D draws with: sead::PerspectiveProjection keeps its aspect at +0xb0 (near +0x98, far +0x9c, the tan of the half angle +0xac) and builds its matrix
++    # from it, and the game sets that aspect from its cameras' data (1.777778, the 0x3fe38e3b a Mac run's write watch found in every camera, whose projection stayed 16:9 with
++    # Wide view on: Link 1.25 times too wide). Eleven stores set it: the constructor (main+0x3485c64), the setter (main+0xea4b20, a pair whose second word is the aspect), and the
++    # cameras' updates (the others). At each, a value from 1.75 to 1.875 (bits >> 20 == 0x3fe) is stored as the output's aspect when Wide view is on (state +0x110); any other ratio
++    # (a cube map's, a shadow map's, one already wide) as the game gives it. The stubs keep the flags (sub and cbnz, no compare: some sites carry live flags) and the source
++    # register (the wide value is stored from w16); x16 and x17 are free at each (a call or a store follows, none reads them)
++    for site, rt, rn, pair in ((0x3485c64, 3, 0, 0), (0xea4b20, 8, 19, 1), (0x4c533c, 0, 20, 0), (0x653bd4, 0, 8, 0), (0x6545f4, 0, 26, 0), (0x28e72a4, 0, 8, 0),
++                               (0x2dd7164, 0, 22, 0), (0x2e1bb6c, 0, 23, 0), (0x2e1c7d0, 0, 21, 0), (0x3b50988, 0, 0, 0), (0x3b50b50, 0, 24, 0)):
++        orig = 0x2D15A260 if pair else 0xBD000000 | (0xb0 // 4) << 10 | rn << 5 | rt   # stp s0,s8,[x19,#0xac] / str s<rt>,[x<rn>,#0xb0]
++        ctx.site(site, orig.to_bytes(4, 'little').hex())
++        start = here()
++        emit(0x1E260000 | rt << 5 | 17)                         # fmov w17,s<rt>          the aspect's bits
++        emit(0x53147E31)                                        # lsr w17,w17,#20
++        emit(0x510FFA31)                                        # sub w17,w17,#0x3fe      0 for 1.75 to 1.875 (no flags)
++        emit(0x35000091)                                        # cbnz w17,+16            (another ratio: the game's store)
++        emit(ADRP(16, here(), ctx.state))
++        emit(0xB9411210)                                        # ldr w16,[x16,#0x110]    the output's aspect (0: Wide view off)
++        emit(0x35000070)                                        # cbnz w16,+12            (the wide store)
++        emit(orig)                                              # the game's store
++        emit(B(here(), site + 4))
++        if pair: emit(orig)                                     # the pair as the game stores it, then its aspect word replaced
++        emit(0xB9000000 | (0xb0 // 4) << 10 | rn << 5 | 16)     # str w16,[x<rn>,#0xb0]  the output's aspect
++        emit(B(here(), site + 4))
++        ctx.put(site, [B(site, start)], 'wide view: a perspective projection\'s 16:9 aspect stored as the output\'s')
++    # A note of the camera aspect getter's main path (main+0x14fc7b4, ldr d0,[x8]: the two floats it copies from its source object) at +0x138, to tell which path the cameras take
++    site = 0x14fc7b4
++    ctx.site(site, (0xFD400100).to_bytes(4, 'little').hex())   # ldr d0,[x8]
++    start = here(); emit(0xFD400100); emit(ADRP(16, here(), ctx.state)); emit(0xFD009E00)   # ldr d0,[x8]; str d0,[x16,#0x138]
++    emit(B(here(), site + 4))
++    ctx.put(site, [B(site, start)], 'wide view: a note of the camera aspect getter\'s main path (state +0x138)')
 +
  MATCH_FRAME_STEP = {'main': [
      {'name': 'frame ratio from the host\'s step', 'size': 0x9b4, 'fingerprints': ['6ae2aff5344d14568e4dbaf93455e2d8278384bf892ed6c6eca87fef98fbcd1d'], 'stub': frame_step,   # v131072 main+0x6e6be0
       'others': {'dynamic resolution': {'size': 0x294, 'fingerprints': ['7af6ceb0aedf8e0c17dc08ce17fcd6a7cba6d394a0d09e3b504c6d668dc418e7']},   # v131072 main+0x8065e0
-@@ -84,4 +200,8 @@ BINDING = [
+@@ -84,4 +279,8 @@ BINDING = [
      {'what': 'dynamic resolution: full size, or a climb on the load measured at each level', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
       'why': "the game's own dynamic-resolution level function and update, found by their functions' fingerprints on any build that keeps both; switchable (DM_DYNAMIC_RESOLUTION)",
       'checked': 'v131072 main: one function with each fingerprint (the level function a leaf, x2..x11 / x16 / x17 / s0..s2 free), its callers, the update and the controller fields read by disassembly, the fields read in play (2026-11-08); the climb run natively against a model of the update and in play to full size (2026-11-09)'},
@@ -6913,10 +6996,10 @@ index 89c69f1..0107fe5 100644
  DM_RUMBLE_MIN	range	0:0.9:0.05	0	always	Controls	Rumble cutoff
 diff --git a/dm/gfx/msl/fgmv.metal b/dm/gfx/msl/fgmv.metal
 new file mode 100644
-index 0000000..b2eef5c
+index 0000000..8b8edf4
 --- /dev/null
 +++ b/dm/gfx/msl/fgmv.metal
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,198 @@
 +// Frame generation's motion (nvn_mtl.m fg_motion): the motion between two presented pictures, estimated here because the game gives none, as the MetalFX frame interpolator's
 +// motion texture. MetalFX's own flow finds motion up to about 64 px a frame at 1176x540 (and tears or gives up past 96-192 px: the picture stays on one of the two frames, a
 +// judder on fast camera turns); with motion vectors it places any pan exactly. Three passes at 1/8 of the picture's size:
@@ -7071,14 +7154,21 @@ index 0000000..b2eef5c
 +    }
 +    conf.write(half4(half(r)), g);
 +}
-+// Only the still HUD: X13-FF3 also took the present's own pixels where the motion was not trusted (fgmv_conf: 24x24 squares over a model moving its own way, cells shifted
-+// half a step over ground on a camera turn), and those patches showed as blocks over the generated frame on camera turns; X9, which pasted nothing, had the cleaner picture
-+// (the owner, FF3's log 18). There the interpolator's own picture is shown (fgmv_conf is no longer run)
-+kernel void fgmv_hud(texture2d<half, access::read> st [[texture(0)]], texture2d<half, access::write> keep [[texture(1)]], uint2 g [[thread_position_in_grid]]) {
++kernel void fgmv_hud(texture2d<half, access::read> st [[texture(0)]], texture2d<half, access::write> keep [[texture(1)]], texture2d<half, access::read> conf [[texture(2)]],
++                     uint2 g [[thread_position_in_grid]]) {
 +    if (g.x >= keep.get_width() || g.y >= keep.get_height()) return;
 +    int2 mx = int2(st.get_width() - 1, st.get_height() - 1), gi = int2(g);
 +    half k = 0;
-+    if (st.read(g).r > 0.5h)
++    // A block within one 1/8 pixel of motion of its own not trusted (fgmv_conf positive: a model moving its own way on a camera turn, what it uncovers): the present's own (1), over
++    // the 24x24 around it as in X13, so a model is taken whole from one moment. Cut to the 1/8 pixel alone, parts of a model came from the present and the cells beside them from the
++    // interpolation, and models twitched on camera turns (X14's first builds, the owner). Motion its neighbours share (negative: detail of the ground the camera turns over), in this
++    // 1/8 pixel alone: the present's own moved half its step (0.5, fgmv_keep), where X13's unmoved squares were the patches of texture on a camera turn
++    if (conf.get_width() > 1) {
++        int2 cm = int2(conf.get_width() - 1, conf.get_height() - 1), c = gi / 2;
++        for (int y = -1; y <= 1 && k < 1.0h; y++) for (int x = -1; x <= 1; x++) if (float(conf.read(uint2(clamp(c + int2(x, y), int2(0), cm))).r) > FGMV_BAD) { k = 1; break; }
++        if (k < 1.0h && float(conf.read(uint2(clamp(c, int2(0), cm))).r) < -FGMV_BAD) k = 0.5h;
++    }
++    if (k < 1.0h && st.read(g).r > 0.5h)
 +        for (int y = -3; y <= 3 && k < 1.0h; y++) for (int x = -3; x <= 3; x++) if (st.read(uint2(clamp(gi + int2(x, y), int2(0), mx))).r > 1.5h) { k = 1; break; }
 +    keep.write(half4(k), g);
 +}
@@ -7108,11 +7198,67 @@ index 0000000..b2eef5c
 +    float2 v = float2(mot.read(mp).xy) * sc;   // in the picture's pixels
 +    out.write(cur.sample(ls, (float2(g) + 0.5f - 0.5f * v) / size), g);
 +}
+diff --git a/dm/gfx/msl/ndve_engine.metal b/dm/gfx/msl/ndve_engine.metal
+index 237dffd..3de9042 100644
+--- a/dm/gfx/msl/ndve_engine.metal
++++ b/dm/gfx/msl/ndve_engine.metal
+@@ -289,6 +289,24 @@ kernel void resample(device const half *luma [[buffer(0)]], device const half *w
+     }
+ }
+ 
++// DM_NDVE_LITE (nvn_ndve.inc ndve_lite): the movie without the network. pic_copy: the converted picture (RGBA8 1920x1080) into the network's RGB10A2 image as it is,
++// with no correction added; resample_lite: the resampler's bilinear sample of it at each output pixel's centre, its dither and its vertical flip, with no delta
++kernel void pic_copy(texture2d<float, access::read> rgba [[texture(0)]], texture2d<float, access::write> dst [[texture(1)]], uint2 g [[thread_position_in_grid]]) {
++    if (g.x >= 1920 || g.y >= 1080) return;
++    dst.write(rgba.read(g), g);
++}
++kernel void resample_lite(constant RsConst &cc [[buffer(3)]], texture2d<float, access::sample> pic [[texture(0)]], texture2d<float, access::read> dith [[texture(1)]],
++                          texture2d<float, access::write> dst [[texture(2)]], uint2 g [[thread_position_in_grid]]) {
++    constexpr sampler smp(coord::normalized, address::clamp_to_edge, filter::linear, min_filter::nearest, mag_filter::linear, mip_filter::linear);
++    if (g.x >= 2560 || g.y >= 1440) return;
++    const float2 uv = float2((float(g.x) + 0.5f) * cc.s2.z, (float(g.y) + 0.5f) * cc.s2.w);
++    const float3 s = pic.sample(smp, uv, level(0.0f)).xyz;
++    const float3 off = fma(dith.read(uint2(g.x & 511, g.y & 511)).xyz, 2.0f, -1.0f);
++    const float3 k = rint(fma(s, 255.0f, off));
++    const uint yo = cc.c4.w ? uint(cc.c4.z - int(g.y)) : g.y;
++    dst.write(float4(k * 0.0039215688593685626983642578125f, 1.0f), uint2(g.x, yo));
++}
++
+ // DM_NDVE_ENGINE=check: the game's image against the engine's, texel by texel: n[0] the texels that differ, n[1] the largest difference of a component (1/1023 of its range)
+ kernel void cmp_img(texture2d<float, access::read> a [[texture(0)]], texture2d<float, access::read> b [[texture(1)]], device atomic_uint *n [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {
+     if (g.x >= a.get_width() || g.y >= a.get_height()) return;
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
-index 013ccbe..ae4ad0c 100644
+index 013ccbe..d3cd40f 100644
 --- a/dm/gfx/nvn/hle_nvn.c
 +++ b/dm/gfx/nvn/hle_nvn.c
-@@ -2378,6 +2378,16 @@ static int fstep_hold(void) {
+@@ -2070,6 +2070,7 @@ static void tsummary(uint64_t frame) {
+       if (k) { qsort(v, k, sizeof *v, dcmp); LOG("[nvn] on-screen up to frame %llu: %u frames, dropped %u (discarded %u), p99 %.2f ms; footprint %.0f MiB; brightness %.2f; thermal %d", frame, k + discard, drop, discard, v[(k * 99) / 100 < k ? (k * 99) / 100 : k - 1], fp, br, dm_thermal_now()); }
+       g_presn = 0; }
+     power_line(frame);
++    { void dm_wide_note(void); dm_wide_note(); }   // Wide view's notes from the game (below), when they change
+     { static uint64_t prev[6], pf; uint64_t v[6]; mtl_vbuf_stats(&v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+       if (pf && frame > pf) { double nf = (double)(frame - pf);
+           LOG("[nvn] vertex bindings up to frame %llu: per frame address lookups %.0f / reused %.0f, vertex table writes %.0f / skipped %.0f, streams not 4-byte aligned copied %.1f (%.2f MB)", frame,
+@@ -2181,6 +2182,18 @@ static _Atomic uint64_t g_itv2_since;   // start of the game's current run of ev
+ // (fstep_tick, nvn_fstep.h) and presents follow the hold k it decides with it
+ __attribute__((weak)) uint8_t *dm_fps_state;   // loader.c; graphics unit tests have no loader
+ __attribute__((weak)) int dm_fps_step_max;   // loader.c: the largest step the stubs give the game (0 = FSTEP_MAX)
++// Wide view's notes (Ocarina of Time's patches.py wide_view, with DM_WIDE_VIEW): what the game's stubs took, written by them into the state page, logged when they change.
++// +0x120 the HUD canvas width on its display path (an integer), +0x124 on its fixed path (float bits), +0x128 / +0x12c the two camera projection constructors' aspect and
++// +0x130 the aspect getter's fallback (floats), +0x138 the two floats the getter's main path copies. 0: that path has not run. To tell which paths give the HUD and the 3D their shape
++void dm_wide_note(void) {
++    if (!dm_fps_state || !__atomic_load_n((uint32_t *)(dm_fps_state + 0x104), __ATOMIC_RELAXED)) return;
++    static uint8_t last[0x20]; uint8_t v[0x20]; memcpy(v, dm_fps_state + 0x120, sizeof v);
++    if (!memcmp(v, last, sizeof v)) return;
++    memcpy(last, v, sizeof v);
++    uint32_t cd; float cf, a1, a2, a3, g0, g1; memcpy(&cd, v, 4); memcpy(&cf, v + 4, 4); memcpy(&a1, v + 8, 4); memcpy(&a2, v + 12, 4); memcpy(&a3, v + 16, 4); memcpy(&g0, v + 24, 4); memcpy(&g1, v + 28, 4);
++    LOG("[nvn] wide view notes: HUD canvas width %u on its display path, %.0f on its fixed path; camera aspect %.4f / %.4f in the constructors, %.4f in the getter's fallback; getter main path %.4f %.4f",
++        cd, cf, a1, a2, a3, g0, g1);
++}
+ __attribute__((weak)) void dm_fps_lock_tick(void) {}   // hle_fpslock.c: engine frame limits in game memory (Monster Hunter Rise); graphics unit tests have no host
+ static int g_engine_stub = 1;   // the weak dm_fps_lock_engine's answer, for graphics unit tests (t_nvn sets it)
+ __attribute__((weak)) int dm_fps_lock_engine(void) { return g_engine_stub; }   // hle_fpslock.c: the host writes fps_target into an engine limiter of this main
+@@ -2378,6 +2391,16 @@ static int fstep_hold(void) {
      }
      return h;
  }
@@ -7129,7 +7275,7 @@ index 013ccbe..ae4ad0c 100644
  // Once per present, before this frame's period is taken: the time since the previous frame's start (shown) and the frame's cost decide this frame's hold and the next frame's step.
  // Cost = max(CPU: the time between the frames' starts without the pacing wait, GPU: the latest finished frame's GPU time), in vsyncs
  static void fstep_tick(const win_t *o, int c) {
-@@ -2411,6 +2421,7 @@ static void fstep_tick(const win_t *o, int c) {
+@@ -2411,6 +2434,7 @@ static void fstep_tick(const win_t *o, int c) {
      // A probe's grace lasts while its frames keep getting cheaper (nvn_fstep.h FSTEP_RAMP): macOS raises the GPU clock for the shorter deadline over seconds, not the iPhone's 30 frames
      // (Breath of the Wild on an M5 Pro: the probe's 33 frames took the clock 338 → 432 MHz and its GPU time 24.8 → 18.5 ms, then it failed at 22 ms frames; hold 1 needed about 560 MHz)
      g_fs.ramp = mtl_probe_ramp_on();
@@ -7160,7 +7306,7 @@ index 404fc7f..29db1b7 100644
      s->paid += s->step > s->k;
      return s->step;
 diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
-index 4aa8fea..2c3985e 100644
+index 4aa8fea..5b8e415 100644
 --- a/dm/gfx/nvn/nvn_mtl.m
 +++ b/dm/gfx/nvn/nvn_mtl.m
 @@ -6,6 +6,7 @@
@@ -7409,7 +7555,57 @@ index 4aa8fea..2c3985e 100644
  static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretained id<MTLBuffer> *out) {
      pool_seen_scan();
      uint64_t rg = atomic_load(&g_reg_gen), sg = samp ? 0 : atomic_load(&g_ser_gen);   // a sampler table follows registrations alone
-@@ -14728,6 +14817,23 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc_cs(NvShader *cs, uint64_t ind)
+@@ -11247,6 +11336,35 @@ static uint64_t ub_padded(NvShader *sh, int st, int reg, const p_bind_buf *u, ui
+     if (!(sh->logged & 16)) { sh->logged |= 16; static int nlog; if (nlog++ < 16) MLOG("uniform slot %d of shader %s (stage %d) is bound with %llu bytes (%llu readable, a multiple of 256) and read up to byte %u at fixed offsets: it is encoded with zeros past those (%llu such encodes so far)", reg, sh->key, st, (unsigned long long)u->size, (unsigned long long)live, need, (unsigned long long)n); }
+     return g_cur_arena->gpu + off;
+ }
++// Wide view's HUD (DM_WIDE_VIEW with DM_WIDE_ASPECT): Ocarina of Time draws its 2D (HUD, menus, speech bubbles) in a fixed 3840x2160 layout, with an orthographic projection
++// in the vertex stage's uniform block (x scale 1/1920, y 1/1080, near 0 and far 300; a flipped copy at +0x40; the layout's and the screen's size, 3840 2160 3840 2160, at +0x80;
++// a Mac run's pass dump, F6000 pass 457585, shader adacdc69c5a2cadc_b), over whatever target it draws into: on Wide view's 2352x1080 every element was 1.225 times too wide
++// (hearts 1.64:1 against 1.36:1 at 16:9; FF4 on the owner's iPhone 1.69:1), the game's canvas (patches.py, main+0xe8303c) not being what the projection follows. A block with
++// that signature bound while the viewport is wider than 16:9 is copied into the arena with both projections' x scale times (16:9) / the viewport's aspect: the layout drawn at
++// its own shape in the middle 16:9 of the screen, as a PC game keeps its HUD on an ultrawide screen. The game's world-to-layout mapping (speech bubbles and markers over a
++// character, patches.py: main+0x20c2b0, +0x20c99c, +0x215fb0) is widened by the same factor, so a bubble stays over its character. 0 when the block is not one of those
++static int wide2d_on(void) {
++    static int v = -1; if (v >= 0) return v;
++    const char *wv = getenv("DM_WIDE_VIEW"), *wa = getenv("DM_WIDE_ASPECT"), *off = getenv("DM_WIDE_HUD");
++    v = wv && !strcmp(wv, "1") && wa && atof(wa) > 1.8 && !(off && !strcmp(off, "0"));
++    if (v) MLOG("wide view: the 2D layout's projection kept at its own shape on a wider viewport (DM_WIDE_HUD=0 stretches it as before)");
++    return v;
++}
++// probe.c (the Mac host) defines it; this weak default (graphics tests, iOS) does nothing. A weak declaration alone left an undefined symbol the Darwin linker refuses
++__attribute__((weak)) void probe_watch_at(uint64_t at, uint64_t len) { (void)at; (void)len; MLOG("wide view: DM_WATCH_SCENE: this build has no write watch (the Mac host only)"); }
++static uint64_t wide2d_fix(const uint8_t *src, uint64_t n, __strong id<MTLBuffer> *use) {
++    uint32_t w[36]; memcpy(w, src, sizeof w);
++    if (w[0] != 0x3A088889u || w[32] != 0x45700000u || w[33] != 0x45070000u) return 0;   // 1/1920; 3840.0, 2160.0
++    if (!S.has_vp || !(S.vp[0][3] > 0)) return 0;
++    double a = S.vp[0][2] / S.vp[0][3], f = (1920.0 / 1080.0) / a;
++    if (!(f < 0.99)) return 0;   // a 16:9 (or narrower) target: as the game draws it
++    size_t len = (size_t)(n < 256 ? 256 : n);
++    size_t off = arena_alloc(len, use); uint8_t *d = g_cur_arena->cpu + off;
++    memcpy(d, src, (size_t)n); if (len > n) memset(d + n, 0, len - (size_t)n);
++    float *m = (float *)(void *)d; m[0] = (float)(m[0] * f); m[16] = (float)(m[16] * f);   // x scale of the projection and of its flipped copy
++    static uint64_t cnt; if (!cnt++) MLOG("wide view: a 2D layout projection on a %.0fx%.0f viewport drawn at %.3f of its width (its own shape)", S.vp[0][2], S.vp[0][3], f);
++    return g_cur_arena->gpu + off;
++}
+ // A CBUF slot's GPU address, and in *use the buffer it points into: the bound uniform buffer; the shadow of inline updates deferred in this pass; an arena copy padded with zeros
+ // when the binding is shorter than the shader reads it at fixed offsets (ub_padded); or the all-zero bank when nothing usable is bound. The full encode and the patch take it from here
+ static uint64_t cbuf_slot(NvShader *sh, int nvn_stage, const nvn_rbind *b, __strong id<MTLBuffer> *use) {
+@@ -11262,6 +11380,13 @@ static uint64_t cbuf_slot(NvShader *sh, int nvn_stage, const nvn_rbind *b, __str
+         return ub_padded(sh, nvn_stage, reg, u, live, 4u * b->fixw, (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo, use); }
+     *use = (__bridge id<MTLBuffer>)mb;
+     uint64_t ul = cb_len(sh, reg, u->size);   // what the shader can read of it
++    {   // DM_WATCH_SCENE=1 (diagnostic, Mac): the first camera constants block bound (near 0.1, far past 1000, aspect 16:9: Ocarina of Time's scene block) has its aspect write-watched
++        // (probe.c probe_watch_at), so the log names the code that writes the aspect the 3D draws with
++        static int ws = -1; if (ws < 0) ws = getenv("DM_WATCH_SCENE") != NULL;
++        if (__builtin_expect(ws, 0) && u->size >= 16) { float sv[3]; memcpy(sv, (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo, sizeof sv);
++            if (fabsf(sv[0] - 0.1f) < 1e-6f && sv[1] > 1000 && fabsf(sv[2] - 1.7777778f) < 1e-4f) probe_watch_at(u->addr + 8, 4); } }
++    if (nvn_stage == 0 && u->size >= 144 && wide2d_on() && !(g_nubd && ubd_hits(u->addr, u->addr + ul))) {   // Wide view's HUD (wide2d_fix)
++        uint64_t w = wide2d_fix((const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo, ul > u->size ? u->size : ul, use); if (w) return w; }
+     if (g_nubd && ubd_hits(u->addr, u->addr + ul)) {   // inline updates deferred in this pass (see mtl_sub_update); ubd_conflict made sure they cover the binding or the rest can be read from memory
+         uint64_t g; const uint8_t *c; if (ubd_covers(u->addr, u->addr + ul)) gpu = ubd_shadow(u->addr, u->addr + ul);
+         else if (ubp_get(u->addr, u->addr + ul, &g, &c)) gpu = g;
+@@ -14728,6 +14853,23 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc_cs(NvShader *cs, uint64_t ind)
      args_dirty_all();
      return e;
  }
@@ -7433,7 +7629,7 @@ index 4aa8fea..2c3985e 100644
  static void dispatch(const p_dispatch *dp) {
      zskip_clear();
      g_wr_epoch++; g_mdx_epoch++;
-@@ -14778,6 +14884,28 @@ static void dispatch(const p_dispatch *dp) {
+@@ -14778,6 +14920,28 @@ static void dispatch(const p_dispatch *dp) {
      rp_flush();   // A full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does
      image_prepare(prog_get(S.cprog), 0x20);
      if (ndve_engine_dispatch(cs, dp)) return;   // nn::ndve's movie network as the host's kernels (DM_NDVE_ENGINE=1)
@@ -7462,7 +7658,7 @@ index 4aa8fea..2c3985e 100644
      if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx)
      // Threadgroup memory past Metal's 32 KB, in a device buffer (dmsh_rewrite.py tg_spill): a slice for every workgroup of the grid. An indirect dispatch's grid is in GPU memory, written earlier
      // in the frame: the replay waits for the GPU (as an indirect-count multi-draw does, mdi_wait) and reads it. Mario Kart World's spilled dispatches are all direct, of 1 to 3 workgroups
-@@ -15862,6 +15990,7 @@ void mtl_exec(const uint8_t *p) {
+@@ -15862,6 +16026,7 @@ void mtl_exec(const uint8_t *p) {
  static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
  static id<MTLSamplerState> g_blit_samp;
  static uint64_t g_present_n;
@@ -7470,7 +7666,7 @@ index 4aa8fea..2c3985e 100644
  uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
  void mtl_res_snapshot(mtl_res_count *out) {
      memset(out, 0, sizeof *out);
-@@ -16329,12 +16458,17 @@ typedef struct { id<MTL4FXSpatialScaler> sc; id<MTLTexture> in, out; uint64_t ma
+@@ -16329,12 +16494,17 @@ typedef struct { id<MTL4FXSpatialScaler> sc; id<MTLTexture> in, out; uint64_t ma
  static fx_state g_fx_present;   // only the present thread encodes or replaces the scaler
  static id<MTL4Compiler> g_fx_comp;
  static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
@@ -7488,7 +7684,7 @@ index 4aa8fea..2c3985e 100644
      if (v && !(g_q4 && [MTLFXSpatialScalerDescriptor supportsMetal4FX:g_dev])) { MLOG("present upscaling: this GPU has no Metal 4 MetalFX spatial scaler; the present scales bilinearly"); v = 0; }
      MLOG("present upscaling (DM_PRESENT_UPSCALE): %s", v ? "metalfx, MetalFX's spatial scaler where the picture is shown larger than the game renders it" : "off, bilinear");
      return g_fx_mode = v;
-@@ -16490,6 +16624,7 @@ static int up_mfx_encode(NvShader *cs) {
+@@ -16490,6 +16660,7 @@ static int up_mfx_encode(NvShader *cs) {
      for (int i = 0; i < cs->rf.nb; i++) { int k = cs->rf.b[i].kind; if (k == NVN_RB_TEX && ti < 0) ti = i; else if (k == NVN_RB_IMG && oi < 0) oi = i; else if (k == NVN_RB_TEX || k == NVN_RB_IMG) return 0; }
      if (ti < 0 || oi < 0) { static int once; if (!once++) MLOG("[RED] upscaler %s: not one texture and one image; the shader draws", cs->key); return 0; }
      int tin = (int)(tex_slot_h(S.tex[5], S.img[5], cs->rf.b[ti].reg) & 0xfffff), tout = cs->rf.b[oi].reg < 32 ? (int)(S.img[5][cs->rf.b[oi].reg] & 0xfffff) : 0;
@@ -7496,7 +7692,7 @@ index 4aa8fea..2c3985e 100644
      tex_t dout = {0}; id<MTLTexture> in, out;
      os_unfair_lock_lock(&g_rmu);
      int ok = tin > 0 && tin < g_ntreg && g_treg[tin].ok && tout > 0 && tout < g_ntreg && g_treg[tout].ok;
-@@ -16506,7 +16641,7 @@ static int up_mfx_encode(NvShader *cs) {
+@@ -16506,7 +16677,7 @@ static int up_mfx_encode(NvShader *cs) {
      if (!in || !out || in == out || in.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D || in.sampleCount != 1 || out.sampleCount != 1 ||
          fmt_int_or_ds(in.pixelFormat) || fmt_int_or_ds(out.pixelFormat) || mtl_fmt_block(out.pixelFormat) || !up_mfx_rect(v, in.width, in.height, &ir) || !up_mfx_rect(v + 4, out.width, out.height, &orr) ||
          orr.width < ir.width || orr.height < ir.height || (orr.width == ir.width && orr.height == ir.height)) { g_up_mfx_kept++; return 0; }
@@ -7505,7 +7701,7 @@ index 4aa8fea..2c3985e 100644
      up_mfx_scaler *e = up_mfx_scaler_for((NSUInteger)ir.width, (NSUInteger)ir.height, (NSUInteger)orr.width, (NSUInteger)orr.height, srgb); if (!e) { g_up_mfx_kept++; return 0; }
      id<MTL4FXSpatialScaler> sc = e->sc;
      // Straight in and out when MetalFX can take the game's textures as they are; through the scaler's own textures otherwise
-@@ -16611,6 +16746,11 @@ static void present_gpu_note(double s, int fx) {
+@@ -16611,6 +16782,11 @@ static void present_gpu_note(double s, int fx) {
      MLOG("present command buffer GPU time over 600 presents %s: p50 %.3f ms, p95 %.3f ms, max %.3f ms", fx ? "through MetalFX" : "through the bilinear pass", a[299], a[569], a[599]);
      n[fx] = 0;
  }
@@ -7517,7 +7713,7 @@ index 4aa8fea..2c3985e 100644
  static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
  static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
      if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
-@@ -16624,6 +16764,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16624,6 +16800,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
               g_up_total_ns / 1e6, g_bp_first_present / 1e9);
      }
      PD("X ser=%llu", t->serial);
@@ -7525,7 +7721,7 @@ index 4aa8fea..2c3985e 100644
      id<MTLTexture> src = tex_mtl(t);
      if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }
      // The picture's shape for the front end's layout (front.h front_picture_shape): reported when its width / height changes by more than 0.1 %, not on a size change of the same
-@@ -16633,8 +16774,11 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16633,8 +16810,11 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      // A texture made on first resolution joins the residency set (res_add), which a submission commits; a window texture presented before any submission has used it was still
      // outside the committed set when the display command buffer sampled it. Super Smash Bros. Ultimate presents its window texture in its first frames before drawing into it:
      // the display queue page-faulted (kIOGPUCommandBufferCallbackErrorPageFault) and macOS then ignored every later command buffer of the process, so the window stayed pink
@@ -7539,7 +7735,7 @@ index 4aa8fea..2c3985e 100644
      // DM_NVN_REGLUM=x0,y0,x1,y1:file (normalized coordinates): read back this region on every present and record "present sequence number, present time ns, region mean luminance, subsampled grayscale thumbnail (hex)" (diagnostic: verify that animation speed is independent of frame rate).
      // A separate command buffer is queued after this frame's rendering (the same queue executes in submit order); does not wait for the GPU and does not disturb frame pacing
      static int rl = -1; static float rr[4]; static FILE *rlf; static pthread_mutex_t rlmu = PTHREAD_MUTEX_INITIALIZER;
-@@ -16663,7 +16807,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16663,7 +16843,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
          nshot = 0; const char *e = getenv("DM_NVN_SHOT"), *c = e ? strchr(e, ':') : NULL;
          if (c) { shot_path = c + 1; for (const char *q = e; q < c && nshot < 4096; q = strchr(q, ',') ? strchr(q, ',') + 1 : c) shots[nshot++] = atol(q); }
      }
@@ -7549,7 +7745,7 @@ index 4aa8fea..2c3985e 100644
      pthread_mutex_lock(&g_shotq_mu);
      for (int i = 0; i < g_nshotq;) if (g_present_n >= g_shotq[i].frame) { mtl_finish_gpu(); shot(src, g_shotq[i].path, 1, crop); g_shotq[i] = g_shotq[--g_nshotq]; } else i++;
      pthread_mutex_unlock(&g_shotq_mu);
-@@ -16681,11 +16826,21 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16681,11 +16862,21 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
      if (!supplied) g_drawable_ns += now_ns() - dt0;
      if (!dr) return 0;
@@ -7572,7 +7768,7 @@ index 4aa8fea..2c3985e 100644
      }
      [g_present_alloc4[alloc_i] reset];
      [g_q4 waitForDrawable:dr];
-@@ -16704,7 +16859,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16704,7 +16895,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      id<MTL4CommandBuffer> buffers[] = {cb};
      pthread_mutex_lock(&g_pq_mu); g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
      [g_q4 commit:buffers count:1 options:o];
@@ -7581,7 +7777,7 @@ index 4aa8fea..2c3985e 100644
          static double leads[300], e2e[300];   // e2e: game enqueue -> system-scheduled present (including the time waiting in the queue for the display-link callback), the full span of input latency that our side can read
          static uint64_t lead_n;
          leads[lead_n % 300] = (target_ts - CACurrentMediaTime()) * 1000.0; e2e[lead_n % 300] = g_link_it_tin > 0 ? (target_ts - g_link_it_tin) * 1000.0 : 0;
-@@ -16725,7 +16880,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16725,7 +16916,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
      (void)period; [dr present];
  #else
      uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
@@ -7590,7 +7786,7 @@ index 4aa8fea..2c3985e 100644
          CFTimeInterval tt = d.presentedTime;
          g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
      }];
-@@ -16743,7 +16898,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+@@ -16743,7 +16934,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
  // Swapchain texture return: before AcquireTexture gets a texture it waits for the ticket of that texture's previous present to be processed (mtl_present_wait), after which the commands the game draws into it
  // are necessarily ordered after that blit on the GPU queue.
  #define PQ 8
@@ -7599,7 +7795,7 @@ index 4aa8fea..2c3985e 100644
  // External producer (the Vulkan layer, dm/gfx/vk) renders on its own queue and signals this event when a frame's rendering is done: the present of that frame waits for the value on g_q4
  static id<MTLSharedEvent> g_ext_ev;
  static void ext_wait(uint64_t v) { if (v && g_ext_ev) [g_q4 waitForEvent:g_ext_ev value:v]; }
-@@ -16752,7 +16907,44 @@ static pq_item g_pq[PQ];
+@@ -16752,7 +16943,39 @@ static pq_item g_pq[PQ];
  static uint64_t g_pq_in;
  static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double);
  static double g_link_vperiod, g_link_vhalf;   // virtual ticks (link_range): seconds per counted tick (0 = every callback is a tick) and half a refresh of the screen
@@ -7617,17 +7813,12 @@ index 4aa8fea..2c3985e 100644
 +static int g_fg_starved; static uint64_t g_fg_paused_behind, g_fg_last_drop, g_fg_drops;
 +// Frames dropping on and on (a second drop within FG_AGAIN presents of the one before) make the interpolation lighter instead: the pixel budget's next step (fg_level_down,
 +// g_fg_budget), smaller generated and shown frames brought back to the screen's size by the present's bilinear pass; past the last step it stays there and keeps running.
-+// Its cost follows its pixels, so 960x540 costs about a quarter of 1920x1080, and the GPU's lighter load is less heat. The first step is a phone's whole 1920x1080, X9's
-+// picture: FF3 started at 1440x810, stepped down to 960x540 in the first seconds' loading and stayed there all session (log 18), soft next to X9 (the owner). A step back up
-+// after FG_UP_CALM presents in a row in time (20 s at 30 fps; a minute kept FF3 at 960x540), twice that, up to FG_UP_CALM_MAX, when the step up was followed by another
-+// step down within FG_UP_BACK presents. A hitch (a present FG_HITCH present intervals or more after the one before: a load, a scene change, a pipeline built) drops frames
-+// whatever the interpolation costs, and is not counted toward a step down. Decided by dropped frames, not by the temperature
-+// The first step is no budget at all, the picture as shown (Wide view's 2352x1080 too: FF4 has Wide view on by default, and its frames at 1920x1080's budget were 0.90 of it)
-+enum { FG_LEVELS = 5, FG_UP_CALM = 600, FG_UP_CALM_MAX = 7200, FG_UP_BACK = 600, FG_HITCH = 3 };
-+static const double g_fg_budget[FG_LEVELS] = {1e12, 1920.0 * 1080, 1440.0 * 810, 1200.0 * 675, 960.0 * 540};
-+static const char *const g_fg_budget_name[FG_LEVELS] = {"full (as shown)", "1920x1080", "1440x810", "1200x675", "960x540"};
-+static double g_fg_take_ts;   // the display time of the last present taken (display link thread, under g_pq_mu), for FG_HITCH
-+static uint64_t g_fg_hitches;
++// Its cost follows its pixels, so 960x540 costs about a quarter of 1920x1080, and the GPU's lighter load is less heat. A step back up after FG_UP_CALM presents in a row in
++// time (a minute at 30 fps), twice that, up to FG_UP_CALM_MAX, when the step up was followed by another step down within FG_UP_BACK presents. Decided by dropped frames,
++// not by the temperature
++enum { FG_LEVELS = 3, FG_UP_CALM = 1800, FG_UP_CALM_MAX = 7200, FG_UP_BACK = 600 };
++static const double g_fg_budget[FG_LEVELS] = {1440.0 * 810, 1200.0 * 675, 960.0 * 540};
++static const char *const g_fg_budget_name[FG_LEVELS] = {"1440x810", "1200x675", "960x540"};
 +static _Atomic int g_fg_level;   // the budget's step: changed on the display link thread under g_pq_mu, read where the snapshots are sized (fg_shown_size)
 +static _Atomic uint64_t g_fg_shown_px;   // the pixels of the last picture sized for frame generation as shown (fg_shown_size), for fg_level_down
 +static uint64_t g_fg_lvl_calm, g_fg_up_at, g_fg_lvl_downs, g_fg_lvl_ups; static int g_fg_up_need = FG_UP_CALM;
@@ -7644,7 +7835,7 @@ index 4aa8fea..2c3985e 100644
  @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
  @end
  
-@@ -16788,6 +16980,8 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
+@@ -16788,6 +17011,8 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
          if (t < next - g_link_vhalf) return;
          next += vp; tol += 2 * g_link_vhalf;   // a tick lies up to half a refresh off its slot, so two of them up to one refresh nearer each other than the slots
      }
@@ -7653,7 +7844,7 @@ index 4aa8fea..2c3985e 100644
      static double cb_prev, gap_max; static int nticks;   // for g_link_ring: callbacks counted as ticks since the previous present, and the longest interval between them
      if (cb_prev > 0 && cb - cb_prev > gap_max) gap_max = cb - cb_prev;
      cb_prev = cb; nticks++;
-@@ -16797,7 +16991,30 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
+@@ -16797,7 +17022,30 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
      pthread_cond_broadcast(&g_link_cv);
      pthread_mutex_unlock(&g_link_mu);
      pthread_mutex_lock(&g_pq_mu);
@@ -7666,9 +7857,9 @@ index 4aa8fea..2c3985e 100644
 +        if (!newer && g_dm_present_link && !g_rescue_mode) {
 +            pq_item ow = g_fg_owe; uint64_t tk = g_fg_owe_tk;
 +            if (!(++g_fg_shown % 1800)) MLOG("frame generation on the display link: %llu generated frames shown, each followed by its present's own picture; %llu of those skipped for a newer present; "
-+                                             "presents dropped or late %llu (%llu of them hitches, not counted toward a lighter step), %llu shown without theirs (taken over dropped ones); "
++                                             "presents dropped or late %llu, %llu of them shown without theirs (taken over dropped ones); "
 +                                             "made lighter %llu times and back %llu times, now the %s pixel budget", (unsigned long long)g_fg_shown, (unsigned long long)g_fg_late,
-+                                             (unsigned long long)g_fg_drops, (unsigned long long)g_fg_hitches, (unsigned long long)g_fg_paused_behind,
++                                             (unsigned long long)g_fg_drops, (unsigned long long)g_fg_paused_behind,
 +                                             (unsigned long long)g_fg_lvl_downs, (unsigned long long)g_fg_lvl_ups, fg_fixed() ? "DM_FRAMEGEN_SCALE's" : g_fg_budget_name[atomic_load(&g_fg_level)]);
 +            pthread_mutex_unlock(&g_pq_mu);
 +            g_fg_owing = 1; uint64_t p0 = now_ns(), a0 = g_present_alloc_wait_ns, r0 = g_present_res_ns;
@@ -7685,7 +7876,7 @@ index 4aa8fea..2c3985e 100644
      // The previous frame's present interval was >= 2 (period > 25 ms): keep it on screen for its whole period before taking the next one, as the Switch flips only every N vertical syncs. This also holds while the link runs at 60 Hz (Mario 1.2.1 sets 2 for single frames, see nvn_game_fps in hle_nvn.c);
      //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
      if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) { g_link_held++; pthread_mutex_unlock(&g_pq_mu); return; }
-@@ -16808,16 +17025,43 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
+@@ -16808,16 +17056,40 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
      static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
      if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
      pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
@@ -7693,10 +7884,7 @@ index 4aa8fea..2c3985e 100644
 +        // Behind: older presents were dropped for this one. One newer present waiting is not: with snapshots the game runs a frame ahead of the screen, and taking that
 +        // as behind paused frame generation for 1,060 of about 2,900 presents of a run that dropped next to no frames (log 80)
 +        int behind = ticket > first, late = g_fg_starved, drop = behind || late; g_fg_starved = 0;
-+        double ts = update.targetPresentationTimestamp, per = it.period > 0.025 ? it.period : 1 / 30.0;
-+        int hitch = drop && g_fg_take_ts > 0 && ts - g_fg_take_ts >= FG_HITCH * per - tol; g_fg_take_ts = ts;   // (FG_HITCH)
-+        if (hitch) { g_fg_drops++; g_fg_hitches++; g_fg_lvl_calm = 0; }
-+        else if (drop) { int again = g_fg_last_drop && ticket - g_fg_last_drop <= FG_AGAIN; g_fg_last_drop = ticket; g_fg_lvl_calm = 0; g_fg_drops++;
++        if (drop) { int again = g_fg_last_drop && ticket - g_fg_last_drop <= FG_AGAIN; g_fg_last_drop = ticket; g_fg_lvl_calm = 0; g_fg_drops++;
 +            if (again && fg_on()) {
 +                if (fg_level_down()) {   // lighter (FG_LEVELS)
 +                    if (g_fg_up_at && ticket - g_fg_up_at <= FG_UP_BACK) g_fg_up_need = MIN(g_fg_up_need * 2, FG_UP_CALM_MAX);
@@ -7731,7 +7919,7 @@ index 4aa8fea..2c3985e 100644
      if (!submitted) {
          pthread_mutex_lock(&g_pq_mu);
          if (ticket > g_pq_done) g_pq_done = ticket;
-@@ -16857,8 +17101,13 @@ static CAFrameRateRange link_range(int mode) {
+@@ -16857,8 +17129,13 @@ static CAFrameRateRange link_range(int mode) {
  __attribute__((weak)) int front_fullscreen(void) { return 0; }   // front_mac.m; graphics unit tests and iOS have none
  __attribute__((weak)) int front_screen_variable_refresh(void) { return 0; }   // front_mac.m; graphics unit tests and iOS have none
  // CAMetalDisplayLink accepts only 1 or 2. Compare its readback with the supported request, or an oversized override rewrites and logs every frame.
@@ -7747,7 +7935,7 @@ index 4aa8fea..2c3985e 100644
  // The 30 Hz link at a 30 fps target, except in fullscreen on a fixed-rate screen. There the link skipped ticks: Ocarina of Time at a 30 fps cap on a MacBook Air M4 (60 Hz) got
  // 16.5-25 callbacks a second over stretches of 300 frames, also on frames with under 1 ms of GPU, and each skipped tick kept a frame on screen 66.7 ms (a 180 s walk: 388 and 996
  // frames over 50 ms; 3-4 in a window, where the same link held 30.0). Why is open (docs/reference/frame-rate.md). The 60 Hz link paces the 30 through the present interval, as it
-@@ -16904,7 +17153,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
+@@ -16904,7 +17181,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
      }
      if (g_rescue_mode) want = 0;
      pthread_mutex_unlock(&g_pq_mu);
@@ -7756,7 +7944,7 @@ index 4aa8fea..2c3985e 100644
      if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : 60);   // the game's rate: a variable-refresh screen goes to a fixed-rate mode at a multiple where it has one
      static int vrr_was; int vrr = want == 1 && link_vrr_120();   // variable-refresh fullscreen that kept its mode: the 120 Hz link paces the 60 (link_vrr_120)
      if (vrr != vrr_was) { vrr_was = vrr; MLOG("display link: %s (frame %llu)", vrr ? "120 Hz in fullscreen on a variable-refresh screen, a frame every other tick (DM_PRESENT_LINK=1 keeps 60 Hz)" : "60 Hz again (window, fixed-rate screen or another frame rate)", (unsigned long long)atomic_load(&g_cur_frame)); }
-@@ -16936,6 +17185,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
+@@ -16936,6 +17213,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
  // These frames will not be seen anyway: discard them directly (accounted as dropped frames) and only wait for the one present already submitted to the GPU to finish.
  static void present_drop_for_suspend(void) {
      pthread_mutex_lock(&g_pq_mu);
@@ -7764,7 +7952,7 @@ index 4aa8fea..2c3985e 100644
      if (g_link_owns_layer) {
          uint64_t n = g_pq_in - g_pq_read;
          for (uint64_t k = g_pq_read + 1; k <= g_pq_in; k++) { g_pres[k % PRING] = (pres_ent){k, -1}; mtl_tex_unpin(g_pq[(k-1)%PQ].t.serial); }
-@@ -16960,6 +17210,7 @@ static void *present_main(void *arg) {
+@@ -16960,6 +17238,7 @@ static void *present_main(void *arg) {
          if (g_present_stop) { pthread_mutex_unlock(&g_pq_mu); break; }
          pq_item it = g_pq[g_pq_read % PQ];
          uint64_t ticket = ++g_pq_read; g_classic_busy = 1;
@@ -7772,7 +7960,7 @@ index 4aa8fea..2c3985e 100644
          pthread_mutex_unlock(&g_pq_mu);
          int submitted;
          ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-@@ -17010,20 +17261,351 @@ extern _Atomic uint64_t dm_present_ns;   // hle_thread.c (DM_HITCH_DUMP); the NV
+@@ -17010,20 +17289,347 @@ extern _Atomic uint64_t dm_present_ns;   // hle_thread.c (DM_HITCH_DUMP); the NV
  // The ring's length is the number of frames the game may run ahead of the screen: DM_PRESENT_SNAP=<n> (2 to SNAP_MAX; 1 = 2). Off by default; the iOS launcher's Frame buffering toggle enables it.
  #define SNAP_MAX 4
  // old: the slot's texture before the presented size or format last changed, resident until the slot's next use (snap_take)
@@ -7920,12 +8108,11 @@ index 4aa8fea..2c3985e 100644
 +// pixels: on an iPhone 18 Pro Max with Wide view its GPU time was 8-13 ms a generated frame (p50) at 2352x1080 against 5-10 ms at 1920x1080 (logs 7 and 9), enough with the game's own
 +// 11-28 ms to drop frames and stop the interpolation nine times in five minutes. The launcher's Frame generation size row (Full / Lighter) is gone: DM_FRAMEGEN_SCALE (0.5 to 1)
 +// remains, to measure, as a fixed factor in place of the budget.
-+// There is no budget at first (X9's picture as shown, Wide view's too; FF3 began at 1440x810 for the reason below) and steps down while frames keep dropping (g_fg_level,
-+// fg_level_down): at 1920x1080 the interpolation took 5-10 ms of GPU time a generated frame
++// The budget is 1440x810 and steps down while frames keep dropping (g_fg_level, fg_level_down): at 1920x1080 the interpolation took 5-10 ms of GPU time a generated frame
 +// (p95 16 ms) on an iPhone where the game's own frame took 28-30 ms in Hyrule Field, and the two did not fit in 33 ms: frames dropped and the interpolation stopped 11 times
 +// in two minutes, the picture switching between 60 and 30 each time (FF2, log 15; the same run without frame generation dropped next to none). Its cost follows its pixels,
 +// so 1440x810 (0.75 of a 16:9 phone picture, 56 % of the pixels) costs about half. Its own pictures come from the same copy (fg_shown_size), so they are that size too, brought
-+// back by the present's bilinear pass. Steps (g_fg_budget): as shown, 1920x1080, 1440x810, 1200x675, 960x540, never below 0.5 of the size shown
++// back by the present's bilinear pass. Steps (g_fg_budget): 1440x810, 1200x675, 960x540, never below 0.5 of the size shown
 +static double fg_fixed(void) {   // DM_FRAMEGEN_SCALE, or 0 for the budget
 +    static double v = -1; if (v >= 0) return v;
 +    const char *e = getenv("DM_FRAMEGEN_SCALE"); double x = e && *e ? atof(e) : 0;
@@ -7942,14 +8129,12 @@ index 4aa8fea..2c3985e 100644
 +    double f = fg_fixed(); if (f) return f;
 +    return fg_size_at(w * h, atomic_load(&g_fg_level));
 +}
-+// Frames keep dropping (the display link, under g_pq_mu): the next step of the budget that makes the last picture's frames smaller (steps that do not, as 1920x1080's for a
-+// picture of that size, are passed over); 0 when there is none (the
++// Frames keep dropping (the display link, under g_pq_mu): the next step of the budget, when it makes the last picture's frames smaller; 0 when there is none (the
 +// interpolation then stays at its lightest and keeps running). The step is made from the next snapshot on (a new size starts the interpolation's history again: one present without a generated frame)
 +static int fg_level_down(void) {
 +    int l = atomic_load(&g_fg_level); double px = (double)atomic_load(&g_fg_shown_px);
-+    if (fg_fixed() || !px) return 0;
-+    for (int n = l + 1; n < FG_LEVELS; n++) if (fg_size_at(px, n) < fg_size_at(px, l)) { atomic_store(&g_fg_level, n); return 1; }
-+    return 0;
++    if (fg_fixed() || l + 1 >= FG_LEVELS || !px || !(fg_size_at(px, l + 1) < fg_size_at(px, l))) return 0;
++    atomic_store(&g_fg_level, l + 1); return 1;
 +}
 +static double fg_size(void) {   // the factor for the screen (the drawable), as fx_mode asks before the first picture: below 1 when frames may be made smaller than shown
 +    CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer(); CGSize ds = layer ? layer.drawableSize : CGSizeZero;
@@ -8054,9 +8239,8 @@ index 4aa8fea..2c3985e 100644
 +    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:resource_vis()];   // after MetalFX's encoders
 +    [ce setArgumentTable:g_fgmv_args];
 +    fgmv_bind(ce, FGMV_STILL, col, prev, g_fg_still, nil); fgmv_grid(ce, g_fg_still.width, g_fg_still.height); fgmv_step(ce);
-+    // No patches from the present where the motion is not trusted (fgmv_conf, X13-FF3): its squares and half-shifted cells showed as blocks over the generated frame on camera
-+    // turns, and X9, which pasted nothing, had the cleaner picture (the owner). The interpolator's own picture there; only the still HUD is kept
-+    fgmv_bind(ce, FGMV_HUD, g_fg_still, g_fg_keep, nil, nil); fgmv_grid(ce, g_fg_keep.width, g_fg_keep.height); fgmv_step(ce);
++    fgmv_bind(ce, FGMV_CONF, g_snap[k].lum, g_snap[pk].lum, g_fg_motion, g_fg_conf); fgmv_grid(ce, g_fg_conf.width, g_fg_conf.height); fgmv_step(ce);
++    fgmv_bind(ce, FGMV_HUD, g_fg_still, g_fg_keep, g_fg_conf, nil); fgmv_grid(ce, g_fg_keep.width, g_fg_keep.height); fgmv_step(ce);
 +    fgmv_bind(ce, FGMV_PSTILL, col, prev, prev2, g_fg_pmask); fgmv_grid(ce, col.width, col.height); fgmv_step(ce);
 +    fgmv_bind(ce, FGMV_KEEP, col, g_fg_keep, gen, g_fg_pmask); [g_fgmv_args setTexture:g_fg_motion.gpuResourceID atIndex:4]; fgmv_grid(ce, gen.width, gen.height);
 +    [ce barrierAfterStages:MTLStageDispatch beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];   // the present reads gen
@@ -8125,7 +8309,7 @@ index 4aa8fea..2c3985e 100644
  static void snap_commit_wait(uint64_t v) { if (v) rec_note_wait(&g_snap_cmt, v); }
  static void snap_drain(void) {
      // Display tickets may have been dropped during suspend, but their copies still belong to the Metal 4 queue.
-@@ -17045,8 +17627,9 @@ uint64_t mtl_snap_acquire_wait(void) {
+@@ -17045,8 +17651,9 @@ uint64_t mtl_snap_acquire_wait(void) {
      if (ws_on()) ws_put(WS_SNAP, w0, blocked);
      return ws_t0() - w0;
  }
@@ -8137,7 +8321,7 @@ index 4aa8fea..2c3985e 100644
      int k = (int)(atomic_load(&g_snap_next) % (uint64_t)g_snap_n);
      pthread_mutex_lock(&g_pq_mu); int busy = atomic_load(&g_snap[k].ticket) > g_pq_done; pthread_mutex_unlock(&g_pq_mu);
      uint64_t ev = atomic_load(&g_snap[k].ev);
-@@ -17054,6 +17637,9 @@ static uint64_t snap_take(const tex_t *t) {
+@@ -17054,6 +17661,9 @@ static uint64_t snap_take(const tex_t *t) {
      // The texture this slot held before it was last replaced: every present that read it had been committed when the replacing copy was (the busy check then), and the queue
      // signals g_snap_ev only after all work committed before the signal, so those presents have run and it can leave the residency set
      if (g_snap[k].old) { [g_snap_res removeAllocation:g_snap[k].old]; [g_snap_res commit]; g_snap[k].old = nil; }
@@ -8147,7 +8331,7 @@ index 4aa8fea..2c3985e 100644
      id<MTLTexture> src = tex_mtl(t); if (!src) return 0;
      // The copy reads the source before present_now runs, so it needs the same commit as present_now: a window texture presented before any submission has used it was made just
      // now and is outside the committed residency set. DRAGON QUEST XI S presents three times before its first submission; on an A17 Pro the copy faulted silently (its command buffer
-@@ -17069,10 +17655,20 @@ static uint64_t snap_take(const tex_t *t) {
+@@ -17069,10 +17679,20 @@ static uint64_t snap_take(const tex_t *t) {
              if (!g_snap_alloc[i] || !g_snap_cb[i]) MDIE("present snapshots: no command allocator / buffer");
          }
      }
@@ -8171,7 +8355,7 @@ index 4aa8fea..2c3985e 100644
          // The old texture stays resident (and referenced) until the slot's next use: the busy check above means its last present was committed, not that the GPU has run it,
          // and a texture removed here was sampled outside the residency set by a display command buffer still queued
          g_snap[k].old = dst;
-@@ -17080,26 +17676,45 @@ static uint64_t snap_take(const tex_t *t) {
+@@ -17080,26 +17700,45 @@ static uint64_t snap_take(const tex_t *t) {
          [g_snap_res addAllocation:dst]; [g_snap_res commit];
          if (!g_snap[k].serial) { static _Atomic uint64_t n; g_snap[k].serial = (1ull << 61) + atomic_fetch_add(&n, 1) + 1; }
          serial_put(g_snap[k].serial, dst); g_snap[k].tex = dst;
@@ -8225,7 +8409,7 @@ index 4aa8fea..2c3985e 100644
          atomic_store(&g_snap_cmt, v);
      }
      g_snap[k].ev = v;
-@@ -17126,18 +17741,21 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
+@@ -17126,18 +17765,21 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
          else if (st == 2 && now - t0 >= at + dur) { st = 3; mtl_link_pause(0); MLOG("DM_TEST_LINK_STALL: resuming the display link (frame %llu)", (unsigned long long)atomic_load(&g_cur_frame)); }
      }
      if (ws_on()) { static uint64_t f0; uint64_t f = atomic_load(&g_cur_frame); if (!f0) f0 = f; else if (f >= f0 + 300) { ws_report(f, f - f0); f0 = f; } }
@@ -8252,6 +8436,85 @@ index 4aa8fea..2c3985e 100644
      pthread_cond_broadcast(&g_pq_cv);
      pthread_mutex_unlock(&g_pq_mu);
      // A snapshot present returns its ticket and, in *copy, its copy: the game's next acquire of this texture waits for the copy (mtl_present_wait_texture), not for the screen
+diff --git a/dm/gfx/nvn/nvn_ndve.inc b/dm/gfx/nvn/nvn_ndve.inc
+index 233e858..720f0bb 100644
+--- a/dm/gfx/nvn/nvn_ndve.inc
++++ b/dm/gfx/nvn/nvn_ndve.inc
+@@ -21,11 +21,12 @@ static const char k_ndve_keys[NDVE_N][17] = {"49dff010b9832251", "ba079f68ae288d
+ typedef struct { uint32_t W, H, tiles_x, tiles_y; } ndve_args;
+ enum { NT_X0, NT_A, NT_S16, NT_B32, NT_S32, NT_E32, NT_C64, NT_D64, NT_N };
+ static const int k_ndve_t[NT_N][3] = {{960, 540, 16}, {960, 540, 16}, {960, 540, 16}, {480, 270, 32}, {480, 270, 32}, {480, 270, 32}, {240, 135, 64}, {240, 135, 64}};
+-enum { NK_PACK, NK_C16, NK_C32, NK_C64, NK_D16, NK_D32, NK_U64, NK_U32, NK_OUT, NK_LUMA, NK_RS, NK_CMP, NK_N };
+-static const char *k_ndve_kern[NK_N] = {"pack_input", "conv3s_16_16", "conv3s_32_32", "conv3s_64_64", "down_16_32", "down_32_64", "up_64_32", "up_32_16", "out_16", "rs_luma", "resample", "cmp_img"};
+-static const int k_ndve_ry[NK_N] = {0, 4, 2, 1, 2, 1, 1, 2, 4, 0, 0, 0};
++enum { NK_PACK, NK_C16, NK_C32, NK_C64, NK_D16, NK_D32, NK_U64, NK_U32, NK_OUT, NK_LUMA, NK_RS, NK_CMP, NK_COPY, NK_RSL, NK_N };
++static const char *k_ndve_kern[NK_N] = {"pack_input", "conv3s_16_16", "conv3s_32_32", "conv3s_64_64", "down_16_32", "down_32_64", "up_64_32", "up_32_16", "out_16", "rs_luma", "resample", "cmp_img",
++    "pic_copy", "resample_lite"};
++static const int k_ndve_ry[NK_N] = {0, 4, 2, 1, 2, 1, 1, 2, 4, 0, 0, 0, 0, 0};
+ // each kernel's weights: taps, input channels, output channels (w[tap][k][n] halves), then N biases
+-static const int k_ndve_shape[NK_N][3] = {{0, 0, 0}, {9, 16, 16}, {9, 32, 32}, {9, 64, 64}, {4, 16, 32}, {4, 32, 64}, {4, 64, 32}, {4, 32, 16}, {9, 16, 16}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
++static const int k_ndve_shape[NK_N][3] = {{0, 0, 0}, {9, 16, 16}, {9, 32, 32}, {9, 64, 64}, {4, 16, 32}, {4, 32, 64}, {4, 64, 32}, {4, 32, 16}, {9, 16, 16}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+ typedef struct { int k, in, out, skip, layer; } ndve_layer;   // layer: the game's dispatch it stands for (its position in k_ndve_keys)
+ static const ndve_layer k_ndve_l[] = {
+     {NK_PACK, -1, NT_X0, -1, 0}, {NK_C16, NT_X0, NT_A, -1, 1}, {NK_C16, NT_A, NT_S16, -1, 2}, {NK_D16, NT_S16, NT_B32, -1, 3}, {NK_C32, NT_B32, NT_S32, -1, 4},
+@@ -63,6 +64,12 @@ static struct {
+ static int ndve_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_NDVE_ENGINE", 1); return m; }   // on by default; 0 off, ab (DM_AB phases)
+ // DM_NDVE_ENGINE=check: the game's dispatches run, and the engine computes the same frame beside them into images of its own, compared with the game's (logged every 300 frames)
+ static int ndve_check(void) { static int c = -1; if (c < 0) { const char *e = getenv("DM_NDVE_ENGINE"); c = e && !strcmp(e, "check"); if (c) MLOG("DM_NDVE_ENGINE=check: the game's movie network runs, and the host's beside it, compared"); } return c; }
++// DM_NDVE_LITE (on by default): the movie without the network. Its U-Net only adds a learned correction to the converted picture (out_16: picture + D + bias), and the
++// resampler only adds a learned delta to a bilinear sample (resample: s + delta), so the light path writes the picture as it is (pic_copy) and resamples it bilinearly with
++// the game's dither and flip (resample_lite). The network took 11.3 ms and its resampler 3.8 ms of an M5's GPU each title-screen frame (one profiled frame in 300, Mac run,
++// render scale 0.6): the title and opening movies held the frame at 16.6-17.3 ms on the Mac and 17-18.5 ms on an iPhone (log 21, frames 0-600), short of 60 fps. The light
++// path takes well under 1 ms; the movie is the decoded 1080p AV1 frame, a little softer. DM_NDVE_LITE=0 runs the full network (the host's kernels, DM_NDVE_ENGINE)
++static int ndve_lite(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NDVE_LITE"); v = !(e && *e && !atoi(e)) && !ndve_check(); MLOG("NDVE engine: %s", v ? "light movie path (the picture without the network, resampled bilinearly; DM_NDVE_LITE=0 runs the network)" : "the full movie network (DM_NDVE_LITE=0)"); } return v; }
+ static int ndve_index(NvShader *cs, int from) { for (int i = from; i < NDVE_N; i++) if (!strncmp(cs->key, k_ndve_keys[i], 16)) return i; return -1; }
+ // Pipelines and tensors, made once in the background; the game's dispatches run until they are ready
+ static void ndve_build(void) {
+@@ -152,6 +159,17 @@ static void ndve_encode(id<MTLTexture> rgba, id<MTLTexture> out, uint64_t wgpu)
+     enc_c_end(ce);
+     args_dirty_all();
+ }
++// DM_NDVE_LITE: the picture into the network's image as it is (no correction added)
++static void ndve_encode_lite(id<MTLTexture> rgba, id<MTLTexture> out) {
++    rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
++    id<MTL4ComputeCommandEncoder> ce = (id<MTL4ComputeCommandEncoder>)enc_c_begin(NULL);
++    id<MTL4ArgumentTable> at = g_nd.at; [ce setArgumentTable:at];
++    [ce setComputePipelineState:g_nd.ps[NK_COPY]]; [at setTexture:rgba.gpuResourceID atIndex:0]; [at setTexture:out.gpuResourceID atIndex:1];
++    [ce dispatchThreadgroups:MTLSizeMake(1920 / 32, (1080 + 7) / 8, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
++    [ce barrierAfterStages:MTLStageDispatch | MTLStageBlit beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
++    enc_c_end(ce);
++    args_dirty_all();
++}
+ // The resampler 4f41ccf2: luma pre-pass, then one SIMD-group an 8x8 output block
+ static int ndve_resample(NvShader *cs, id<MTLTexture> into) {
+     id<MTLTexture> pic = ndve_tex(cs, NVN_RB_TEX, 0), dith = ndve_tex(cs, NVN_RB_TEX, 3), out = ndve_tex(cs, NVN_RB_IMG, 1);
+@@ -166,6 +184,13 @@ static int ndve_resample(NvShader *cs, id<MTLTexture> into) {
+     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+     id<MTL4ComputeCommandEncoder> ce = (id<MTL4ComputeCommandEncoder>)enc_c_begin(NULL);
+     id<MTL4ArgumentTable> at = g_nd.at; [ce setArgumentTable:at];
++    if (!into && ndve_lite()) {   // bilinear, the game's dither and flip, no delta
++        [ce setComputePipelineState:g_nd.ps[NK_RSL]]; [at setAddress:cb.gpuAddress + co atIndex:3];
++        [at setTexture:pic.gpuResourceID atIndex:0]; [at setTexture:dith.gpuResourceID atIndex:1]; [at setTexture:out.gpuResourceID atIndex:2];
++        [ce dispatchThreadgroups:MTLSizeMake(2560 / 32, 1440 / 8, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
++        [ce barrierAfterStages:MTLStageDispatch beforeQueueStages:MTLStageAll visibilityOptions:resource_vis()];
++        enc_c_end(ce); args_dirty_all(); return 1;
++    }
+     [ce setComputePipelineState:g_nd.ps[NK_LUMA]]; [at setTexture:pic.gpuResourceID atIndex:0]; [at setAddress:g_nd.luma.gpuAddress atIndex:1];
+     [ce dispatchThreadgroups:MTLSizeMake(60, 135, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+     [ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:resource_vis()];
+@@ -247,10 +272,10 @@ static int ndve_engine_dispatch(NvShader *cs, const p_dispatch *dp) {
+     if (rgba_id != g_nd.pic) return ndve_fail(cs, "the picture added to the network's output is not the one its first layer read");
+     if (!mtl_gpu_addr(g_nd.w0, NDVE_WBYTES, &wb, &wo, &wgpu)) return ndve_fail(cs, "the weight table is in no memory pool");
+     if (chk && !g_nd.shadow) g_nd.shadow = ndve_shadow(out);
+-    ndve_encode(rgba, chk ? g_nd.shadow : out, wgpu);
++    if (!chk && ndve_lite()) ndve_encode_lite(rgba, out); else ndve_encode(rgba, chk ? g_nd.shadow : out, wgpu);
+     if (chk) g_nd.game_out = out;   // compared once the game's 5a7d69b0 has written it, at 4f41ccf2
+     g_nd.pos = 13;   // the resampler next
+-    if (!g_nd.frames++) MLOG("NDVE engine: first movie frame by the engine (%llu dispatches skipped)", (unsigned long long)g_nd.skipped);
++    if (!g_nd.frames++) MLOG("NDVE engine: first movie frame by the engine (%llu dispatches skipped)%s", (unsigned long long)g_nd.skipped, !chk && ndve_lite() ? ", light path" : "");
+     (void)dp; return !chk;
+ }
+ static void ndve_teardown(void) {
 diff --git a/dm/gfx/tests/Makefile b/dm/gfx/tests/Makefile
 index 9f1cf34..64d5d3a 100644
 --- a/dm/gfx/tests/Makefile
@@ -8331,10 +8594,10 @@ index 0000000..27d750a
 +} }
 diff --git a/dm/gfx/tests/t_framegen.m b/dm/gfx/tests/t_framegen.m
 new file mode 100644
-index 0000000..b0e0fc1
+index 0000000..a2be700
 --- /dev/null
 +++ b/dm/gfx/tests/t_framegen.m
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,338 @@
 +// Frame generation (DM_FRAMEGEN, nvn_mtl.m fg_on): MetalFX's frame interpolator after each present snapshot, from the previous one, and the display link showing each generated
 +// frame on its present's first tick and the present's own picture half its interval later. A white square moves 16 px a present over a grey picture, with a still one at the right
 +// (a HUD): the generated frame has the moving one halfway and the still one in place. Real presents through an offscreen layer; the display link's ticks are called here
@@ -8507,16 +8770,15 @@ index 0000000..b0e0fc1
 +    g_test_layer = [CAMetalLayer layer]; g_test_layer.device = g_dev; g_test_layer.drawableSize = CGSizeMake(W, H); g_test_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
 +    mtl_present_screen(W, H); mtl_present_layer(W, H);   // the picture's shape, as a front end reports it
 +    CHECK("frame generation on", fg_on());
-+    // the pixel budget (no DM_FRAMEGEN_SCALE in this mode): none at its first step (X9's picture as shown, Wide view's and an iPad's too); 1920x1080 at the second, where
-+    // Wide view's and an iPad's are smaller, never below 0.5; a picture within 10 % of a step's budget as shown
-+    CHECK("budget: 1920x1080 as shown", fg_size_for(1920, 1080) == 1);
++    // the pixel budget (no DM_FRAMEGEN_SCALE in this mode), 1440x810 at its first step: a 16:9 phone picture at 0.75, Wide view's and an iPad's smaller, never below 0.5;
++    // a picture within 10 % of it as shown
++    CHECK("budget: 1920x1080 at 0.75", fabs(fg_size_for(1920, 1080) - 0.75) < 1e-9);
 +    CHECK("budget: 1280x720, under it, as shown", fg_size_for(1280, 720) == 1);
 +    CHECK("budget: 1500x830, within 10 % of it, as shown", fg_size_for(1500, 830) == 1);
-+    CHECK("budget: Wide view's 2352x1080 as shown at first", fg_size_for(2352, 1080) == 1);
-+    CHECK("budget: an iPad's 2732x2048 as shown at first", fg_size_for(2732, 2048) == 1);
-+    CHECK("budget steps: Wide view's 2352x1080 at about 0.90 on the second", fabs(fg_size_at(2352 * 1080, 1) - 0.904) < 0.005);
-+    CHECK("budget steps: 1920x1080 as shown on the second, 0.75 on the third, 0.625 on the fourth, 0.5 on the fifth", fg_size_at(1920 * 1080, 1) == 1 && fabs(fg_size_at(1920 * 1080, 2) - 0.75) < 1e-9 && fabs(fg_size_at(1920 * 1080, 3) - 0.625) < 1e-9 && fabs(fg_size_at(1920 * 1080, 4) - 0.5) < 1e-9);
-+    CHECK("budget steps: Wide view's floor on the fifth", fg_size_at(2352 * 1080, 4) == 0.5);
++    CHECK("budget: Wide view's 2352x1080 at about 0.68", fabs(fg_size_for(2352, 1080) - 0.678) < 0.005);
++    CHECK("budget: an iPad's 2732x2048 at 0.5, the floor", fg_size_for(2732, 2048) == 0.5);
++    CHECK("budget steps: 1920x1080 at 0.625 on the second, 0.5 on the third", fabs(fg_size_at(1920 * 1080, 1) - 0.625) < 1e-9 && fabs(fg_size_at(1920 * 1080, 2) - 0.5) < 1e-9);
++    CHECK("budget steps: Wide view's floor on the third", fg_size_at(2352 * 1080, 2) == 0.5);
 +    CHECK("snapshots on with a ring of 3", mtl_snap_on() && g_snap_n == 3);
 +    // The present thread takes the presents (no display link): each slot's generated frame against the presents before
 +    int ok[6];
@@ -8607,16 +8869,15 @@ index 0000000..b0e0fc1
 +        int l1 = atomic_load(&g_fg_level);
 +        LATE2(76, big); int l2 = atomic_load(&g_fg_level);
 +        LATE2(78, big); int l3 = atomic_load(&g_fg_level);
-+        LATE2(66, big); int l4 = atomic_load(&g_fg_level);
 +        { tex_t t = frame(79); present_enqueue(&t, 1 / 30.0, NULL, 0, NULL); copied(); tick(); tick(); }
 +        tex_t t5 = frame(80); present_enqueue(&t5, 1 / 30.0, NULL, 0, NULL); copied(); int still_made = g_snap[last_slot()].gen_ok; tick(); tick();
-+        printf("frames dropping on a 1920x1080 picture: step %d, step %d, step %d, step %d; generated frames still made %d\n", l1 + 1, l2 + 1, l3 + 1, l4 + 1, still_made);
-+        CHECK("frames dropping on and on make the frames lighter (1920x1080's step, no smaller for this picture, passed over), and past the last step it keeps running", l1 == 2 && l2 == 3 && l3 == 4 && l4 == 4 && still_made);
++        printf("frames dropping on a 1920x1080 picture: step %d, step %d, step %d; generated frames still made %d\n", l1 + 1, l2 + 1, l3 + 1, still_made);
++        CHECK("frames dropping on and on make the frames lighter, and past the last step it keeps running", l1 == 1 && l2 == 2 && l3 == 2 && still_made);
 +        calm(); g_fg_up_need = 4; g_fg_lvl_calm = 0; steady(80, 5);
 +        int lu = atomic_load(&g_fg_level); uint64_t up_at = g_fg_up_at;
-+        CHECK("presents in time take a step back up", lu == 3 && up_at);
++        CHECK("presents in time take a step back up", lu == 1 && up_at);
 +        LATE2(85, big); LATE2(87, big);
-+        CHECK("a step down soon after a step up doubles the calm it takes to go up again", atomic_load(&g_fg_level) == 4 && g_fg_up_need == 8);
++        CHECK("a step down soon after a step up doubles the calm it takes to go up again", atomic_load(&g_fg_level) == 2 && g_fg_up_need == 8);
 +        calm(); steady(89, 3); atomic_store(&g_fg_level, 0);
 +        LATE2(92, (uint64_t)W * H);
 +        CHECK("a picture under the budget: no step makes it smaller, the interpolation keeps running", atomic_load(&g_fg_level) == 0 && g_snap[last_slot()].gen_ok);
@@ -8879,6 +9140,19 @@ index 0000000..1ba0491
 +    [NSFileManager.defaultManager removeItemAtPath:root error:nil];
 +    printf("t_pso_unwrap: %d checks, %d failed\n", checks, failed); return failed != 0;
 +} }
+diff --git a/dm/gfx/tests/test_ndve_engine.py b/dm/gfx/tests/test_ndve_engine.py
+index ac8c00a..37ebc3d 100644
+--- a/dm/gfx/tests/test_ndve_engine.py
++++ b/dm/gfx/tests/test_ndve_engine.py
+@@ -333,7 +333,7 @@ class EngineSource(unittest.TestCase):
+         src = ENGINE.read_text()
+         defined = set(re.findall(r'\bkernel void (\w+)\(', src)) | set(re.findall(r'^(?:CONV|CONV3S|UP)\((\w+),', src, re.M))
+         bound = kernels_bound()
+-        self.assertEqual(len(bound), 12)
++        self.assertEqual(len(bound), 14)   # the network's 12, and the light path's two (DM_NDVE_LITE)
+         self.assertEqual(sorted(set(bound) - defined), [])
+ 
+     def test_weight_offsets_follow_from_the_layers(self):
 diff --git a/dm/gfx/tools/pso_capture.py b/dm/gfx/tools/pso_capture.py
 new file mode 100644
 index 0000000..0905cf8
@@ -9276,6 +9550,28 @@ index a4c301c..cb5fe55 100644
  
  // Host-internal PCM output (used by the in-process audio renderer, see hle_audren.c): the same AudioOut machinery (real output / silent sink / background take-over), keyed by a host-allocated dummy object
  void *dm_pcmout_open(int ch) {
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index 6bb5ba9..0d57c67 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -244,6 +244,8 @@ void hid_keys_init(void) {
+ //   points over that time and lifts it (the touch screen's pans and swipes, hle_touch.c gesture_sample), "dump" logs what each guest thread waits on and the graphics wait points
+ //   (crash_dump_now, as the iOS app's DM_LOG_PORT dump; scripts/regress.py asks for it before stopping a hung game), "program <n>" makes oe::ExecuteProgram(n) with no parameters (a multi-program application's way between its programs, headless), "webshot <path>" saves the offline page shown as a PNG, "#…" is ignored.
+ //   Look at a screen, decide, press, look again: menus whose timing moves from run to run (loading) need no blind timed script
++// probe.c (the Mac host): DM_CTL watch; elsewhere this weak default (a weak declaration alone left an undefined symbol the Darwin linker refuses)
++__attribute__((weak)) void probe_watch_at(uint64_t at, uint64_t len) { (void)at; (void)len; LOG("DM_CTL: watch: this build has no write watch (the Mac host only)"); }
+ static void *ctl_main(void *arg) {
+     const char *path = arg; long off = 0; char line[1100];
+     if (getenv("DM_PREV_PROGRAM") || getenv("DM_RELAUNCH")) {   // oe::ExecuteProgram or oe::RequestToRelaunchApplication started this program in the last one's place: that program acted on what the file holds
+@@ -270,6 +272,8 @@ static void *ctl_main(void *arg) {
+                     void dm_gfx_bufsnap(const char *key, uint64_t a, size_t n, const char *path); char key[32] = {0}, path[512] = {0}; unsigned long long a = 0, n = 0;
+                     if (sscanf(line + 8, "%31s %llx %lli %511s", key, &a, &n, path) == 4) dm_gfx_bufsnap(key, a, (size_t)n, path); else LOG("DM_CTL: bufsnap <shader key> <hex address> <bytes> <path>"); continue; }
+                 if (!strncmp(line, "peek ", 5)) { void dm_ctl_peek(uint64_t a, int n); char *e2; uint64_t a = strtoull(line + 5, &e2, 16); dm_ctl_peek(a, (int)strtol(e2, NULL, 0)); continue; }
++                if (!strncmp(line, "watch ", 6)) { char *e2; uint64_t a = strtoull(line + 6, &e2, 16), n = strtoull(e2, NULL, 0);   // the write watch (probe.c, Mac) armed now on <hex address> <length>, once
++                    probe_watch_at(a, n ? n : 4); continue; }
+                 if (!strncmp(line, "memdump ", 8)) { void dm_ctl_memdump(uint64_t a, uint64_t n, const char *path); char *e2, *e3; uint64_t a = strtoull(line + 8, &e2, 16), n = strtoull(e2, &e3, 0);
+                                                      while (*e3 == ' ') e3++; dm_ctl_memdump(a, n, e3); continue; }
+                 if (!strncmp(line, "cvari ", 6)) { void dm_ctl_cvar_i32(uint64_t off, int32_t v); char *e2; uint64_t off = strtoull(line + 6, &e2, 16); dm_ctl_cvar_i32(off, (int32_t)strtol(e2, NULL, 0)); continue; }
 diff --git a/dm/host/loader.c b/dm/host/loader.c
 index 64d86ba..5ff9254 100644
 --- a/dm/host/loader.c
@@ -9426,6 +9722,25 @@ index 0000000..ed62e45
 +    for (int i = 0; i < n; i++) dst[i] = g_ring[(from + i) & (DM_MIC_RING - 1)];
 +    return n;
 +}
+diff --git a/dm/host/probe.c b/dm/host/probe.c
+index 745c78b..dcefee3 100644
+--- a/dm/host/probe.c
++++ b/dm/host/probe.c
+@@ -352,6 +352,14 @@ static void *poll_run(void *p) {
+     }
+     return NULL;
+ }
++// The same watch armed at run time on bytes found then (nvn_mtl.m DM_WATCH_SCENE: the aspect in the first camera constants block bound), once: their address moves from run to run
++void probe_watch_at(uint64_t at, uint64_t len) {
++    static _Atomic int once; if (atomic_exchange(&once, 1)) return;
++    g_wpsz = (uint64_t)getpagesize(); g_wlen = len; g_wat = at; g_wpg = at & ~(g_wpsz - 1);
++    dm_fault_hook_register(watch_fault);
++    pthread_t t; pthread_create(&t, NULL, watch_arm, NULL); pthread_detach(t);
++    LOG("write watch armed at run time on %#llx + %#llx (host page %#llx)", (unsigned long long)g_wat, (unsigned long long)g_wlen, (unsigned long long)g_wpg);
++}
+ static void watch_install(void) {
+     { const char *e = getenv("DM_PROBE_POLL");
+       if (e) { char *end; g_pheap = !strncmp(e, "heap+", 5); if (g_pheap) e += 5; g_palias = !strncmp(e, "alias+", 6); if (g_palias) e += 6; g_poll = strtoull(e, &end, 16); g_plen = *end == '+' ? strtoull(end + 1, &end, 16) : 4;
 diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
 index d273e97..a1f5fae 100644
 --- a/dm/host/tests/Makefile
@@ -9907,7 +10222,7 @@ index 0ce1484..5d6ec59 100644
 +    return UIMenu(title: s.label, subtitle: fixed ? "\(current), set at launch" : nil, options: .singleSelection, children: actions)
  }
 diff --git a/dm/ios/Sources/Launcher.swift b/dm/ios/Sources/Launcher.swift
-index 2e58a9a..98ece7c 100644
+index 2e58a9a..5bdf9d6 100644
 --- a/dm/ios/Sources/Launcher.swift
 +++ b/dm/ios/Sources/Launcher.swift
 @@ -1,6 +1,6 @@
@@ -9918,6 +10233,17 @@ index 2e58a9a..98ece7c 100644
  // in UserDefaults; Reset to tested defaults shows the defaults, and Play then forgets them. DM_LAUNCHER=0 in Documents/env.txt starts the game at once with the saved choices; DM_SAVED_CHOICES=0 ignores them (and keeps them)
  import SwiftUI
  import UIKit
+@@ -296,6 +296,10 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
+     guard let url = dir?.appendingPathComponent("launcher.json"), let data = try? Data(contentsOf: url) else { return false }
+     guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return false }
+     let model = LauncherModel(file.settings)
++    do {   // the screen's shape for the render scale's size in pixels with Wide view (LauncherSettings.swift rangeLabel), measured as front_ios.m does
++        let sz = UIScreen.main.bounds.size, lo = min(sz.width, sz.height)
++        if lo > 0 { LauncherModel.screenAspect = Double(max(sz.width, sz.height) / lo) }
++    }
+     gameMenuModel = model   // the in-game menu shows and saves the same choices (GameMenu.swift)
+     if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
+     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
 diff --git a/dm/ios/Sources/LauncherRow.swift b/dm/ios/Sources/LauncherRow.swift
 index 82fa3b3..a46f74e 100644
 --- a/dm/ios/Sources/LauncherRow.swift
@@ -9930,7 +10256,7 @@ index 82fa3b3..a46f74e 100644
  
  extension LauncherModel {
 diff --git a/dm/ios/Sources/LauncherSettings.swift b/dm/ios/Sources/LauncherSettings.swift
-index aec4414..d2399ed 100644
+index aec4414..5805883 100644
 --- a/dm/ios/Sources/LauncherSettings.swift
 +++ b/dm/ios/Sources/LauncherSettings.swift
 @@ -11,6 +11,7 @@ struct Setting: Decodable, Identifiable {
@@ -9941,7 +10267,7 @@ index aec4414..d2399ed 100644
      let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
      var id: String { env }
      var sectionTitle: String { section ?? "Game" }
-@@ -30,14 +31,17 @@ struct Setting: Decodable, Identifiable {
+@@ -30,14 +31,20 @@ struct Setting: Decodable, Identifiable {
          default: return true
          }
      }
@@ -9951,6 +10277,9 @@ index aec4414..d2399ed 100644
  struct SettingsFile: Decodable { let settings: [Setting] }
  
  final class LauncherModel: ObservableObject {
++    // The screen's width / height (the iOS launcher sets it from the app's window, as front_ios.m measures it for Wide view), for the render scale's size in pixels with
++    // Wide view on; nil keeps 16:9 (the Mac)
++    static var screenAspect: Double?
      let settings: [Setting]
 -    let fixed: Set<String>      // set by an env file or by the launch environment: shown, not changed
 -    let fromLaunch: Set<String>   // of those, the ones the launch environment set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
@@ -9962,7 +10291,7 @@ index aec4414..d2399ed 100644
      let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
      @Published var values: [String: String] = [:]
  
-@@ -48,15 +52,24 @@ final class LauncherModel: ObservableObject {
+@@ -48,15 +55,24 @@ final class LauncherModel: ObservableObject {
          self.settings = settings
          let env = ProcessInfo.processInfo.environment
          fromLaunch = Set((env["DM_ENV_LAUNCH_KEYS"] ?? "").split(separator: " ").map(String.init))
@@ -9989,7 +10318,7 @@ index aec4414..d2399ed 100644
  
      var sections: [String] {
          settings.reduce(into: []) { if !$0.contains($1.sectionTitle) { $0.append($1.sectionTitle) } }
-@@ -78,18 +91,19 @@ final class LauncherModel: ObservableObject {
+@@ -78,18 +94,26 @@ final class LauncherModel: ObservableObject {
      func rows(in section: String, basic: Bool) -> [Setting] { rows(in: section).filter { $0.basic == basic } }
      // A range's label: its percentage, with the size in pixels for the chosen console mode when the list has the base size (the render scale)
      func rangeLabel(_ s: Setting, _ v: Double) -> String {
@@ -9997,9 +10326,18 @@ index aec4414..d2399ed 100644
 +        var p = "\(Int((v * 100).rounded())) %"
 +        if let name = s.marks?.first(where: { $0.count == 2 && abs((Double($0[0]) ?? -1) - v) < 0.001 })?[1] { p += " · \(name)" }
          guard let b = s.base else { return p }
-         let size = (values["DM_OPMODE"] ?? "1") == "0" ? b.handheld : b.docked
+-        let size = (values["DM_OPMODE"] ?? "1") == "0" ? b.handheld : b.docked
++        let handheld = (values["DM_OPMODE"] ?? "1") == "0", size = handheld ? b.handheld : b.docked
          guard size.count == 2 else { return p }
-         return "\(Int((Double(size[0]) * v).rounded())) × \(Int((Double(size[1]) * v).rounded())) (\(p))"
+-        return "\(Int((Double(size[0]) * v).rounded())) × \(Int((Double(size[1]) * v).rounded())) (\(p))"
++        var w = Int((Double(size[0]) * v).rounded()); let h = Int((Double(size[1]) * v).rounded())
++        // Wide view (Ocarina of Time): the output's width follows the screen at 1080 or 1440 tall, a multiple of 16 (loader.c dm_fps_state_apply), and the game takes the 3D
++        // width from the 3D height and the output's shape, rounded down (logs at 0.6: 1432 x 658 for 2352 x 1080, 1909 x 877 for 3136 x 1440)
++        if values["DM_WIDE_VIEW"] == "1", let r = LauncherModel.screenAspect, r >= 1.8, r <= 2.6 {
++            let oh = handheld ? 1080.0 : 1440.0, ow = (oh * r / 16).rounded() * 16
++            w = Int((Double(h) * ow / oh).rounded(.down))
++        }
++        return "\(w) × \(h) (\(p))"
      }
 -    var changed: Bool { settings.contains { !fixed.contains($0.env) && !$0.isDefault(values[$0.env] ?? $0.def) } }
 +    var changed: Bool { settings.contains { !fixed.contains($0.env) && !isBase($0, values[$0.env] ?? base($0)) } }
@@ -10012,7 +10350,7 @@ index aec4414..d2399ed 100644
          fputs("launcher: settings reset to the game's defaults\n", stderr)
      }
  
-@@ -97,14 +111,14 @@ final class LauncherModel: ObservableObject {
+@@ -97,14 +121,14 @@ final class LauncherModel: ObservableObject {
      // differs from the game's default is stored: a setting the player left at its default follows the defaults of a later build (the settings it was tested with)
      func apply() {
          for s in settings {
@@ -10031,7 +10369,7 @@ index aec4414..d2399ed 100644
      }
  
      // A choice made while the game runs (the iOS in-game menu, GameMenu.swift): saved as Play saves it, so the settings screen shows it at the next start, and put in the environment.
-@@ -118,8 +132,8 @@ final class LauncherModel: ObservableObject {
+@@ -118,8 +142,8 @@ final class LauncherModel: ObservableObject {
      // DM_LAUNCHER=0: no screen, but the saved choices still apply (only DM_SAVED_CHOICES=0 ignores them); nothing is written
      func applySaved() {
          for s in settings where !fixed.contains(s.env) {

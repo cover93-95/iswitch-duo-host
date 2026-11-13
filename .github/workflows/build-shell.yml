@@ -24,7 +24,7 @@ env:
   EXPECTED_XCODE: Xcode 27.2
   NX2APPLE_COMMIT: 5c0db6cde8bd648f313d404dac45ac55d8c2a62f
   EXPECTED_CHAIN: a5e7fb6e4fa4
-  # Moteur FF4 : NX2Apple 1.5.0 (pin nxnative 0c078130) + le fork cheemu21/kid-with-sword-remake ff4 (MIT), voir engine-ff4.diff.
+  # Moteur FF7 : NX2Apple 1.5.0 (pin nxnative 0c078130) + le fork cheemu21/kid-with-sword-remake ff7 sans amiibo (MIT), voir engine-ff7.diff.
   NX2APPLE_ENGINE_COMMIT: 0e866231982af5931393118a6b675f0e9aa56f7d
 
 defaults:
@@ -73,7 +73,7 @@ jobs:
           git -C "$RUNNER_TEMP/nx150" checkout -q "$NX2APPLE_ENGINE_COMMIT"
           git config --global user.name ci; git config --global user.email ci@localhost
           python3 "$RUNNER_TEMP/nx150/tools/engine.py" sync
-          git -C "$RUNNER_TEMP/nx150/engine" apply --binary "$GITHUB_WORKSPACE/oot/engine-ff4.diff"
+          git -C "$RUNNER_TEMP/nx150/engine" apply --binary "$GITHUB_WORKSPACE/oot/engine-ff7.diff"
           test ! -e engine
           mv "$RUNNER_TEMP/nx150/engine" engine
           # Bibliotheque : boites de jeu debout, reflets, selection lumineuse (interface seulement, aucune donnee de jeu).
@@ -113,7 +113,7 @@ jobs:
 
           DM_BUNDLE_ID: local.iswitchduo.botw
           DM_SHELL_NAME: NX2 Switch 2
-          DM_APP_VERSION: 1.5.0
+          DM_APP_VERSION: 1.5.1
           STD_FONT: ${{ github.workspace }}/frontend-ios/Sources/ShellUI/Resources/Manrope.ttf
         run: |
           export DM_SHELL_FRAMEWORKS="$MARKER_FW"
